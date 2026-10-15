@@ -8,7 +8,11 @@
 			"dark_vs": "keyword.control: #569CD6",
 			"light_vs": "keyword.control: #0000FF",
 			"hc_black": "keyword.control: #C586C0",
-			"hc_light": "keyword.control: #B5200D"
+			"dark_modern": "keyword.control: #C586C0",
+			"hc_light": "keyword.control: #B5200D",
+			"light_modern": "keyword.control: #AF00DB",
+			"2026-dark": "keyword.control: #C586C0",
+			"2026-light": "keyword.control: #AF00DB"
 		}
 	},
 	{
@@ -20,7 +24,11 @@
 			"dark_vs": "keyword.control: #569CD6",
 			"light_vs": "keyword.control: #0000FF",
 			"hc_black": "keyword.control: #C586C0",
-			"hc_light": "keyword.control: #B5200D"
+			"dark_modern": "keyword.control: #C586C0",
+			"hc_light": "keyword.control: #B5200D",
+			"light_modern": "keyword.control: #AF00DB",
+			"2026-dark": "keyword.control: #C586C0",
+			"2026-light": "keyword.control: #AF00DB"
 		}
 	},
 	{
@@ -32,7 +40,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -44,7 +56,11 @@
 			"dark_vs": "entity.name.function.preprocessor: #569CD6",
 			"light_vs": "entity.name.function.preprocessor: #0000FF",
 			"hc_black": "entity.name.function: #DCDCAA",
-			"hc_light": "entity.name.function.preprocessor: #0F4A85"
+			"dark_modern": "entity.name.function.preprocessor: #569CD6",
+			"hc_light": "entity.name.function.preprocessor: #0F4A85",
+			"light_modern": "entity.name.function.preprocessor: #0000FF",
+			"2026-dark": "entity.name.function.preprocessor: #569CD6",
+			"2026-light": "entity.name.function.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -56,7 +72,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -68,7 +88,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "variable: #9CDCFE",
-			"hc_light": "variable: #001080"
+			"dark_modern": "variable: #9CDCFE",
+			"hc_light": "variable: #001080",
+			"light_modern": "variable: #001080",
+			"2026-dark": "variable: #FFA657",
+			"2026-light": "variable: #953800"
 		}
 	},
 	{
@@ -80,7 +104,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -92,7 +120,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -104,7 +136,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "variable: #9CDCFE",
-			"hc_light": "variable: #001080"
+			"dark_modern": "variable: #9CDCFE",
+			"hc_light": "variable: #001080",
+			"light_modern": "variable: #001080",
+			"2026-dark": "variable: #FFA657",
+			"2026-light": "variable: #953800"
 		}
 	},
 	{
@@ -116,7 +152,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -128,7 +168,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -140,7 +184,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "variable: #9CDCFE",
-			"hc_light": "variable: #001080"
+			"dark_modern": "variable: #9CDCFE",
+			"hc_light": "variable: #001080",
+			"light_modern": "variable: #001080",
+			"2026-dark": "variable: #FFA657",
+			"2026-light": "variable: #953800"
 		}
 	},
 	{
@@ -152,7 +200,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -164,7 +216,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -176,7 +232,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "variable: #9CDCFE",
-			"hc_light": "variable: #001080"
+			"dark_modern": "variable: #9CDCFE",
+			"hc_light": "variable: #001080",
+			"light_modern": "variable: #001080",
+			"2026-dark": "variable: #FFA657",
+			"2026-light": "variable: #953800"
 		}
 	},
 	{
@@ -188,7 +248,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -200,7 +264,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -212,7 +280,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "constant.character: #569CD6",
-			"hc_light": "constant.character.escape: #EE0000"
+			"dark_modern": "constant.character.escape: #D7BA7D",
+			"hc_light": "constant.character.escape: #EE0000",
+			"light_modern": "constant.character.escape: #EE0000",
+			"2026-dark": "constant.character.escape: #D7BA7D",
+			"2026-light": "constant.character.escape: #EE0000"
 		}
 	},
 	{
@@ -224,7 +296,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -236,7 +312,11 @@
 			"dark_vs": "storage.type: #569CD6",
 			"light_vs": "storage.type: #0000FF",
 			"hc_black": "storage.type: #569CD6",
-			"hc_light": "storage.type: #0F4A85"
+			"dark_modern": "storage.type: #569CD6",
+			"hc_light": "storage.type: #0F4A85",
+			"light_modern": "storage.type: #0000FF",
+			"2026-dark": "storage.type: #FF7B72",
+			"2026-light": "storage.type: #CF222E"
 		}
 	},
 	{
@@ -248,7 +328,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -260,7 +344,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -272,7 +360,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -284,7 +376,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "constant.character: #569CD6",
-			"hc_light": "constant.character.escape: #EE0000"
+			"dark_modern": "constant.character.escape: #D7BA7D",
+			"hc_light": "constant.character.escape: #EE0000",
+			"light_modern": "constant.character.escape: #EE0000",
+			"2026-dark": "constant.character.escape: #D7BA7D",
+			"2026-light": "constant.character.escape: #EE0000"
 		}
 	},
 	{
@@ -296,7 +392,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -308,7 +408,11 @@
 			"dark_vs": "storage.type: #569CD6",
 			"light_vs": "storage.type: #0000FF",
 			"hc_black": "storage.type: #569CD6",
-			"hc_light": "storage.type: #0F4A85"
+			"dark_modern": "storage.type: #569CD6",
+			"hc_light": "storage.type: #0F4A85",
+			"light_modern": "storage.type: #0000FF",
+			"2026-dark": "storage.type: #FF7B72",
+			"2026-light": "storage.type: #CF222E"
 		}
 	},
 	{
@@ -320,7 +424,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -332,7 +440,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "entity.name.type: #4EC9B0",
-			"hc_light": "entity.name.type: #185E73"
+			"dark_modern": "entity.name.type: #4EC9B0",
+			"hc_light": "entity.name.type: #185E73",
+			"light_modern": "entity.name.type: #267F99",
+			"2026-dark": "entity.name.type: #4EC9B0",
+			"2026-light": "entity.name.type: #267F99"
 		}
 	},
 	{
@@ -344,7 +456,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -356,7 +472,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -368,7 +488,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -380,7 +504,11 @@
 			"dark_vs": "storage.type: #569CD6",
 			"light_vs": "storage.type: #0000FF",
 			"hc_black": "storage.type: #569CD6",
-			"hc_light": "storage.type: #0F4A85"
+			"dark_modern": "storage.type: #569CD6",
+			"hc_light": "storage.type: #0F4A85",
+			"light_modern": "storage.type: #0000FF",
+			"2026-dark": "storage.type: #FF7B72",
+			"2026-light": "storage.type: #CF222E"
 		}
 	},
 	{
@@ -392,7 +520,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -404,7 +536,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "entity.name.type: #4EC9B0",
-			"hc_light": "entity.name.type: #185E73"
+			"dark_modern": "entity.name.type: #4EC9B0",
+			"hc_light": "entity.name.type: #185E73",
+			"light_modern": "entity.name.type: #267F99",
+			"2026-dark": "entity.name.type: #4EC9B0",
+			"2026-light": "entity.name.type: #267F99"
 		}
 	},
 	{
@@ -416,7 +552,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -428,7 +568,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "constant.character: #569CD6",
-			"hc_light": "constant.character.escape: #EE0000"
+			"dark_modern": "constant.character.escape: #D7BA7D",
+			"hc_light": "constant.character.escape: #EE0000",
+			"light_modern": "constant.character.escape: #EE0000",
+			"2026-dark": "constant.character.escape: #D7BA7D",
+			"2026-light": "constant.character.escape: #EE0000"
 		}
 	},
 	{
@@ -440,7 +584,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -452,7 +600,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -464,7 +616,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -476,19 +632,27 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "constant.character: #569CD6",
-			"hc_light": "constant.character.escape: #EE0000"
+			"dark_modern": "constant.character.escape: #D7BA7D",
+			"hc_light": "constant.character.escape: #EE0000",
+			"light_modern": "constant.character.escape: #EE0000",
+			"2026-dark": "constant.character.escape: #D7BA7D",
+			"2026-light": "constant.character.escape: #EE0000"
 		}
 	},
 	{
 		"c": "            ",
-		"t": "source.cpp meta.preprocessor.macro.cpp meta.block.namespace.cpp meta.body.namespace.cpp meta.block.struct.cpp meta.body.struct.cpp meta.function.definition.cpp",
+		"t": "source.cpp meta.preprocessor.macro.cpp meta.block.namespace.cpp meta.body.namespace.cpp meta.block.struct.cpp meta.body.struct.cpp meta.function.definition.cpp meta.head.function.definition.cpp",
 		"r": {
 			"dark_plus": "meta.preprocessor: #569CD6",
 			"light_plus": "meta.preprocessor: #0000FF",
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -500,7 +664,11 @@
 			"dark_vs": "storage.type: #569CD6",
 			"light_vs": "storage.type: #0000FF",
 			"hc_black": "storage.type: #569CD6",
-			"hc_light": "storage.type: #0F4A85"
+			"dark_modern": "storage.type: #569CD6",
+			"hc_light": "storage.type: #0F4A85",
+			"light_modern": "storage.type: #0000FF",
+			"2026-dark": "storage.type: #FF7B72",
+			"2026-light": "storage.type: #CF222E"
 		}
 	},
 	{
@@ -512,7 +680,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -524,7 +696,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "entity.name.function: #DCDCAA",
-			"hc_light": "entity.name.function: #5E2CBC"
+			"dark_modern": "entity.name.function: #DCDCAA",
+			"hc_light": "entity.name.function: #5E2CBC",
+			"light_modern": "entity.name.function: #795E26",
+			"2026-dark": "entity.name.function: #D2A8FF",
+			"2026-light": "entity.name.function: #8250DF"
 		}
 	},
 	{
@@ -536,7 +712,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -548,7 +728,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -560,7 +744,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -572,7 +760,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -584,7 +776,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "constant.character: #569CD6",
-			"hc_light": "constant.character.escape: #EE0000"
+			"dark_modern": "constant.character.escape: #D7BA7D",
+			"hc_light": "constant.character.escape: #EE0000",
+			"light_modern": "constant.character.escape: #EE0000",
+			"2026-dark": "constant.character.escape: #D7BA7D",
+			"2026-light": "constant.character.escape: #EE0000"
 		}
 	},
 	{
@@ -596,7 +792,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -608,7 +808,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -620,7 +824,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -632,7 +840,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -644,19 +856,27 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "constant.character: #569CD6",
-			"hc_light": "constant.character.escape: #EE0000"
+			"dark_modern": "constant.character.escape: #D7BA7D",
+			"hc_light": "constant.character.escape: #EE0000",
+			"light_modern": "constant.character.escape: #EE0000",
+			"2026-dark": "constant.character.escape: #D7BA7D",
+			"2026-light": "constant.character.escape: #EE0000"
 		}
 	},
 	{
 		"c": "        ",
-		"t": "source.cpp meta.preprocessor.macro.cpp meta.block.namespace.cpp meta.body.namespace.cpp meta.function.definition.cpp",
+		"t": "source.cpp meta.preprocessor.macro.cpp meta.block.namespace.cpp meta.body.namespace.cpp meta.function.definition.cpp meta.head.function.definition.cpp",
 		"r": {
 			"dark_plus": "meta.preprocessor: #569CD6",
 			"light_plus": "meta.preprocessor: #0000FF",
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -668,7 +888,11 @@
 			"dark_vs": "storage.modifier: #569CD6",
 			"light_vs": "storage.modifier: #0000FF",
 			"hc_black": "storage.modifier: #569CD6",
-			"hc_light": "storage.modifier: #0F4A85"
+			"dark_modern": "storage.modifier: #569CD6",
+			"hc_light": "storage.modifier: #0F4A85",
+			"light_modern": "storage.modifier: #0000FF",
+			"2026-dark": "storage.modifier: #569CD6",
+			"2026-light": "storage.modifier: #0000FF"
 		}
 	},
 	{
@@ -680,7 +904,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -692,7 +920,11 @@
 			"dark_vs": "storage.type: #569CD6",
 			"light_vs": "storage.type: #0000FF",
 			"hc_black": "storage.type: #569CD6",
-			"hc_light": "storage.type: #0F4A85"
+			"dark_modern": "storage.type: #569CD6",
+			"hc_light": "storage.type: #0F4A85",
+			"light_modern": "storage.type: #0000FF",
+			"2026-dark": "storage.type: #FF7B72",
+			"2026-light": "storage.type: #CF222E"
 		}
 	},
 	{
@@ -704,7 +936,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -716,7 +952,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "entity.name.function: #DCDCAA",
-			"hc_light": "entity.name.function: #5E2CBC"
+			"dark_modern": "entity.name.function: #DCDCAA",
+			"hc_light": "entity.name.function: #5E2CBC",
+			"light_modern": "entity.name.function: #795E26",
+			"2026-dark": "entity.name.function: #D2A8FF",
+			"2026-light": "entity.name.function: #8250DF"
 		}
 	},
 	{
@@ -728,7 +968,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -740,7 +984,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -752,7 +1000,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -764,7 +1016,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -776,7 +1032,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -788,7 +1048,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "constant.character: #569CD6",
-			"hc_light": "constant.character.escape: #EE0000"
+			"dark_modern": "constant.character.escape: #D7BA7D",
+			"hc_light": "constant.character.escape: #EE0000",
+			"light_modern": "constant.character.escape: #EE0000",
+			"2026-dark": "constant.character.escape: #D7BA7D",
+			"2026-light": "constant.character.escape: #EE0000"
 		}
 	},
 	{
@@ -800,7 +1064,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -812,7 +1080,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -824,7 +1096,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -836,7 +1112,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "constant.character: #569CD6",
-			"hc_light": "constant.character.escape: #EE0000"
+			"dark_modern": "constant.character.escape: #D7BA7D",
+			"hc_light": "constant.character.escape: #EE0000",
+			"light_modern": "constant.character.escape: #EE0000",
+			"2026-dark": "constant.character.escape: #D7BA7D",
+			"2026-light": "constant.character.escape: #EE0000"
 		}
 	},
 	{
@@ -848,7 +1128,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -860,7 +1144,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "variable: #9CDCFE",
-			"hc_light": "variable: #001080"
+			"dark_modern": "variable: #9CDCFE",
+			"hc_light": "variable: #001080",
+			"light_modern": "variable: #001080",
+			"2026-dark": "variable.other: #C9D1D9",
+			"2026-light": "variable.other: #1F2328"
 		}
 	},
 	{
@@ -872,7 +1160,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -884,7 +1176,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "entity.name.function: #DCDCAA",
-			"hc_light": "entity.name.function: #5E2CBC"
+			"dark_modern": "entity.name.function: #DCDCAA",
+			"hc_light": "entity.name.function: #5E2CBC",
+			"light_modern": "entity.name.function: #795E26",
+			"2026-dark": "entity.name.function: #D2A8FF",
+			"2026-light": "entity.name.function: #8250DF"
 		}
 	},
 	{
@@ -896,7 +1192,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -908,7 +1208,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -920,7 +1224,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -932,7 +1240,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -944,7 +1256,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "constant.character: #569CD6",
-			"hc_light": "constant.character.escape: #EE0000"
+			"dark_modern": "constant.character.escape: #D7BA7D",
+			"hc_light": "constant.character.escape: #EE0000",
+			"light_modern": "constant.character.escape: #EE0000",
+			"2026-dark": "constant.character.escape: #D7BA7D",
+			"2026-light": "constant.character.escape: #EE0000"
 		}
 	},
 	{
@@ -956,7 +1272,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -968,7 +1288,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -980,7 +1304,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -992,7 +1320,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "constant.character: #569CD6",
-			"hc_light": "constant.character.escape: #EE0000"
+			"dark_modern": "constant.character.escape: #D7BA7D",
+			"hc_light": "constant.character.escape: #EE0000",
+			"light_modern": "constant.character.escape: #EE0000",
+			"2026-dark": "constant.character.escape: #D7BA7D",
+			"2026-light": "constant.character.escape: #EE0000"
 		}
 	},
 	{
@@ -1004,7 +1336,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -1016,7 +1352,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "entity.name.function: #DCDCAA",
-			"hc_light": "entity.name.function: #5E2CBC"
+			"dark_modern": "entity.name.function: #DCDCAA",
+			"hc_light": "entity.name.function: #5E2CBC",
+			"light_modern": "entity.name.function: #795E26",
+			"2026-dark": "entity.name.function: #D2A8FF",
+			"2026-light": "entity.name.function: #8250DF"
 		}
 	},
 	{
@@ -1028,7 +1368,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -1040,7 +1384,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -1052,7 +1400,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -1064,7 +1416,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -1076,7 +1432,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -1088,7 +1448,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -1100,7 +1464,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -1112,7 +1480,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -1124,7 +1496,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "constant.character: #569CD6",
-			"hc_light": "constant.character.escape: #EE0000"
+			"dark_modern": "constant.character.escape: #D7BA7D",
+			"hc_light": "constant.character.escape: #EE0000",
+			"light_modern": "constant.character.escape: #EE0000",
+			"2026-dark": "constant.character.escape: #D7BA7D",
+			"2026-light": "constant.character.escape: #EE0000"
 		}
 	},
 	{
@@ -1136,7 +1512,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -1148,7 +1528,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.block: #C9D1D9",
+			"2026-light": "meta.block: #1F2328"
 		}
 	},
 	{
@@ -1160,7 +1544,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -1172,7 +1560,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "constant.character: #569CD6",
-			"hc_light": "constant.character.escape: #EE0000"
+			"dark_modern": "constant.character.escape: #D7BA7D",
+			"hc_light": "constant.character.escape: #EE0000",
+			"light_modern": "constant.character.escape: #EE0000",
+			"2026-dark": "constant.character.escape: #D7BA7D",
+			"2026-light": "constant.character.escape: #EE0000"
 		}
 	},
 	{
@@ -1184,7 +1576,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -1196,7 +1592,11 @@
 			"dark_vs": "storage.modifier: #569CD6",
 			"light_vs": "storage.modifier: #0000FF",
 			"hc_black": "storage.modifier: #569CD6",
-			"hc_light": "storage.modifier: #0F4A85"
+			"dark_modern": "storage.modifier: #569CD6",
+			"hc_light": "storage.modifier: #0F4A85",
+			"light_modern": "storage.modifier: #0000FF",
+			"2026-dark": "storage.modifier: #569CD6",
+			"2026-light": "storage.modifier: #0000FF"
 		}
 	},
 	{
@@ -1208,7 +1608,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -1220,7 +1624,11 @@
 			"dark_vs": "storage.type: #569CD6",
 			"light_vs": "storage.type: #0000FF",
 			"hc_black": "storage.type: #569CD6",
-			"hc_light": "storage.type: #0F4A85"
+			"dark_modern": "storage.type: #569CD6",
+			"hc_light": "storage.type: #0F4A85",
+			"light_modern": "storage.type: #0000FF",
+			"2026-dark": "storage.type: #FF7B72",
+			"2026-light": "storage.type: #CF222E"
 		}
 	},
 	{
@@ -1232,7 +1640,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -1244,7 +1656,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "entity.name.scope-resolution: #4EC9B0",
-			"hc_light": "entity.name.scope-resolution: #185E73"
+			"dark_modern": "entity.name.scope-resolution: #4EC9B0",
+			"hc_light": "entity.name.scope-resolution: #185E73",
+			"light_modern": "entity.name.scope-resolution: #267F99",
+			"2026-dark": "entity.name.scope-resolution: #4EC9B0",
+			"2026-light": "entity.name.scope-resolution: #267F99"
 		}
 	},
 	{
@@ -1256,7 +1672,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -1268,7 +1688,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "entity.name.function: #DCDCAA",
-			"hc_light": "entity.name.function: #5E2CBC"
+			"dark_modern": "entity.name.function: #DCDCAA",
+			"hc_light": "entity.name.function: #5E2CBC",
+			"light_modern": "entity.name.function: #795E26",
+			"2026-dark": "entity.name.function: #D2A8FF",
+			"2026-light": "entity.name.function: #8250DF"
 		}
 	},
 	{
@@ -1280,7 +1704,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	},
 	{
@@ -1292,7 +1720,11 @@
 			"dark_vs": "meta.preprocessor: #569CD6",
 			"light_vs": "meta.preprocessor: #0000FF",
 			"hc_black": "meta.preprocessor: #569CD6",
-			"hc_light": "meta.preprocessor: #0F4A85"
+			"dark_modern": "meta.preprocessor: #569CD6",
+			"hc_light": "meta.preprocessor: #0F4A85",
+			"light_modern": "meta.preprocessor: #0000FF",
+			"2026-dark": "meta.preprocessor: #569CD6",
+			"2026-light": "meta.preprocessor: #0000FF"
 		}
 	}
 ]

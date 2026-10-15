@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { CharCode } from 'vs/base/common/charCode';
+import { CharCode } from '../../../../base/common/charCode.js';
 
 export const enum TokenType {
 	Dollar,
@@ -129,7 +129,7 @@ export class Scanner {
 
 export abstract class Marker {
 
-	readonly _markerBrand: any;
+	readonly _markerBrand: undefined;
 
 	public parent!: Marker;
 	protected _children: Marker[] = [];
@@ -163,6 +163,13 @@ export abstract class Marker {
 
 	get children(): Marker[] {
 		return this._children;
+	}
+
+	get rightMostDescendant(): Marker {
+		if (this._children.length > 0) {
+			return this._children[this._children.length - 1].rightMostDescendant;
+		}
+		return this;
 	}
 
 	get snippet(): TextmateSnippet | undefined {
@@ -245,7 +252,7 @@ export class Placeholder extends TransformableMarker {
 
 	get choice(): Choice | undefined {
 		return this._children.length === 1 && this._children[0] instanceof Choice
-			? this._children[0] as Choice
+			? this._children[0]
 			: undefined;
 	}
 
@@ -293,7 +300,7 @@ export class Choice extends Marker {
 
 	toTextmateString(): string {
 		return this.options
-			.map(option => option.value.replace(/\||,/g, '\\$&'))
+			.map(option => option.value.replace(/\||,|\\/g, '\\$&'))
 			.join(',');
 	}
 
@@ -380,6 +387,10 @@ export class FormatString extends Marker {
 			return !value ? '' : this._toPascalCase(value);
 		} else if (this.shorthandName === 'camelcase') {
 			return !value ? '' : this._toCamelCase(value);
+		} else if (this.shorthandName === 'kebabcase') {
+			return !value ? '' : this._toKebabCase(value);
+		} else if (this.shorthandName === 'snakecase') {
+			return !value ? '' : this._toSnakeCase(value);
 		} else if (Boolean(value) && typeof this.ifValue === 'string') {
 			return this.ifValue;
 		} else if (!Boolean(value) && typeof this.elseValue === 'string') {
@@ -389,8 +400,41 @@ export class FormatString extends Marker {
 		}
 	}
 
+	// Note: word-based case transforms rely on uppercase/lowercase distinctions.
+	// For scripts without case, transforms are effectively no-ops.
+	private _toKebabCase(value: string): string {
+		const match = value.match(/[\p{L}0-9]+/gu);
+		if (!match) {
+			return value;
+		}
+
+		if (!value.match(/[\p{L}0-9]/u)) {
+			return value
+				.trim()
+				.toLowerCase()
+				.replace(/^_+|_+$/g, '')
+				.replace(/[\s_]+/g, '-');
+		}
+
+		const cleaned = value.trim().replace(/^_+|_+$/g, '');
+
+		const match2 = cleaned.match(/\p{Lu}{2,}(?=\p{Lu}\p{Ll}+[0-9]*|[\s_-]|$)|\p{Lu}?\p{Ll}+[0-9]*|\p{Lu}(?=\p{Lu}\p{Ll})|\p{Lu}(?=[\s_-]|$)|[0-9]+/gu);
+
+		if (!match2) {
+			return cleaned
+				.split(/[\s_-]+/)
+				.filter(word => word.length > 0)
+				.map(word => word.toLowerCase())
+				.join('-');
+		}
+
+		return match2
+			.map(x => x.toLowerCase())
+			.join('-');
+	}
+
 	private _toPascalCase(value: string): string {
-		const match = value.match(/[a-z0-9]+/gi);
+		const match = value.match(/[\p{L}0-9]+/gu);
 		if (!match) {
 			return value;
 		}
@@ -401,7 +445,7 @@ export class FormatString extends Marker {
 	}
 
 	private _toCamelCase(value: string): string {
-		const match = value.match(/[a-z0-9]+/gi);
+		const match = value.match(/[\p{L}0-9]+/gu);
 		if (!match) {
 			return value;
 		}
@@ -412,6 +456,12 @@ export class FormatString extends Marker {
 			return word.charAt(0).toUpperCase() + word.substr(1);
 		})
 			.join('');
+	}
+
+	private _toSnakeCase(value: string): string {
+		return value.replace(/(\p{Ll})(\p{Lu})/gu, '$1_$2')
+			.replace(/[\s\-]+/g, '_')
+			.toLowerCase();
 	}
 
 	toTextmateString(): string {
@@ -586,7 +636,7 @@ export class TextmateSnippet extends Marker {
 
 	clone(): TextmateSnippet {
 		const ret = new TextmateSnippet();
-		this._children = this.children.map(child => child.clone());
+		ret._children = this.children.map(child => child.clone());
 		return ret;
 	}
 
@@ -601,16 +651,20 @@ export class SnippetParser {
 		return value.replace(/\$|}|\\/g, '\\$&');
 	}
 
+	/**
+	 * Takes a snippet and returns the insertable string, e.g return the snippet-string
+	 * without any placeholder, tabstop, variables etc...
+	 */
+	static asInsertText(value: string): string {
+		return new SnippetParser().parse(value).toString();
+	}
+
 	static guessNeedsClipboard(template: string): boolean {
 		return /\${?CLIPBOARD/.test(template);
 	}
 
 	private _scanner: Scanner = new Scanner();
 	private _token: Token = { type: TokenType.EOF, pos: 0, len: 0 };
-
-	text(value: string): string {
-		return this.parse(value).toString();
-	}
 
 	parse(value: string, insertFinalTabstop?: boolean, enforceFinalTabstop?: boolean): TextmateSnippet {
 		const snippet = new TextmateSnippet();
@@ -645,16 +699,30 @@ export class SnippetParser {
 			return true;
 		});
 
-		for (const placeholder of incompletePlaceholders) {
+		const fillInIncompletePlaceholder = (placeholder: Placeholder, stack: Set<number>) => {
 			const defaultValues = placeholderDefaultValues.get(placeholder.index);
-			if (defaultValues) {
-				const clone = new Placeholder(placeholder.index);
-				clone.transform = placeholder.transform;
-				for (const child of defaultValues) {
-					clone.appendChild(child.clone());
-				}
-				snippet.replace(placeholder, [clone]);
+			if (!defaultValues) {
+				return;
 			}
+			const clone = new Placeholder(placeholder.index);
+			clone.transform = placeholder.transform;
+			for (const child of defaultValues) {
+				const newChild = child.clone();
+				clone.appendChild(newChild);
+
+				// "recurse" on children that are again placeholders
+				if (newChild instanceof Placeholder && placeholderDefaultValues.has(newChild.index) && !stack.has(newChild.index)) {
+					stack.add(newChild.index);
+					fillInIncompletePlaceholder(newChild, stack);
+					stack.delete(newChild.index);
+				}
+			}
+			snippet.replace(placeholder, [clone]);
+		};
+
+		const stack = new Set<number>();
+		for (const placeholder of incompletePlaceholders) {
+			fillInIncompletePlaceholder(placeholder, stack);
 		}
 
 		return snippet.children.slice(offset);

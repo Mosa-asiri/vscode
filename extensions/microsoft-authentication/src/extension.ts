@@ -3,68 +3,142 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as vscode from 'vscode';
-import { AzureActiveDirectoryService, onDidChangeSessions } from './AADHelper';
-import TelemetryReporter from '@vscode/extension-telemetry';
+import { Environment, EnvironmentParameters } from '@azure/ms-rest-azure-env';
+import Logger from './logger';
+import { MsalAuthProvider } from './node/authProvider';
+import { UriEventHandler } from './UriEventHandler';
+import { authentication, commands, ExtensionContext, l10n, window, workspace, Disposable, Uri } from 'vscode';
+import { MicrosoftAuthenticationTelemetryReporter, MicrosoftSovereignCloudAuthenticationTelemetryReporter } from './common/telemetryReporter';
 
-export async function activate(context: vscode.ExtensionContext) {
-	const { name, version, aiKey } = context.extension.packageJSON as { name: string; version: string; aiKey: string };
-	const telemetryReporter = new TelemetryReporter(name, version, aiKey);
+let implementation: 'msal' | 'msal-no-broker' = 'msal';
+const getImplementation = () => workspace.getConfiguration('microsoft-authentication').get<'msal' | 'msal-no-broker'>('implementation') ?? 'msal';
 
-	const loginService = new AzureActiveDirectoryService(context);
-	await loginService.initialize();
+async function initMicrosoftSovereignCloudAuthProvider(
+	context: ExtensionContext,
+	uriHandler: UriEventHandler
+): Promise<Disposable | undefined> {
+	const environment = workspace.getConfiguration('microsoft-sovereign-cloud').get<string | undefined>('environment');
+	let authProviderName: string | undefined;
+	if (!environment) {
+		return undefined;
+	}
 
-	context.subscriptions.push(vscode.authentication.registerAuthenticationProvider('microsoft', 'Microsoft', {
-		onDidChangeSessions: onDidChangeSessions.event,
-		getSessions: (scopes: string[]) => loginService.getSessions(scopes),
-		createSession: async (scopes: string[]) => {
-			try {
-				/* __GDPR__
-					"login" : {
-						"owner": "TylerLeonhardt",
-						"comment": "Used to determine the usage of the Microsoft Auth Provider.",
-						"scopes": { "classification": "PublicNonPersonalData", "purpose": "FeatureInsight", "comment": "Used to determine what scope combinations are being requested." }
-					}
-				*/
-				telemetryReporter.sendTelemetryEvent('login', {
-					// Get rid of guids from telemetry.
-					scopes: JSON.stringify(scopes.map(s => s.replace(/[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}/i, '{guid}'))),
-				});
-
-				const session = await loginService.createSession(scopes.sort());
-				onDidChangeSessions.fire({ added: [session], removed: [], changed: [] });
-				return session;
-			} catch (e) {
-				/* __GDPR__
-					"loginFailed" : { "owner": "TylerLeonhardt", "comment": "Used to determine how often users run into issues with the login flow." }
-				*/
-				telemetryReporter.sendTelemetryEvent('loginFailed');
-
-				throw e;
+	if (environment === 'custom') {
+		const customEnv = workspace.getConfiguration('microsoft-sovereign-cloud').get<EnvironmentParameters>('customEnvironment');
+		if (!customEnv) {
+			const res = await window.showErrorMessage(l10n.t('You must also specify a custom environment in order to use the custom environment auth provider.'), l10n.t('Open settings'));
+			if (res) {
+				await commands.executeCommand('workbench.action.openSettingsJson', 'microsoft-sovereign-cloud.customEnvironment');
 			}
-		},
-		removeSession: async (id: string) => {
-			try {
-				/* __GDPR__
-					"logout" : { "owner": "TylerLeonhardt", "comment": "Used to determine how often users log out." }
-				*/
-				telemetryReporter.sendTelemetryEvent('logout');
-
-				const session = await loginService.removeSessionById(id);
-				if (session) {
-					onDidChangeSessions.fire({ added: [], removed: [session], changed: [] });
-				}
-			} catch (e) {
-				/* __GDPR__
-					"logoutFailed" : { "owner": "TylerLeonhardt", "comment": "Used to determine how often fail to log out." }
-				*/
-				telemetryReporter.sendTelemetryEvent('logoutFailed');
-			}
+			return undefined;
 		}
-	}, { supportsMultipleAccounts: true }));
+		try {
+			Environment.add(customEnv);
+		} catch (e) {
+			const res = await window.showErrorMessage(l10n.t('Error validating custom environment setting: {0}', e.message), l10n.t('Open settings'));
+			if (res) {
+				await commands.executeCommand('workbench.action.openSettings', 'microsoft-sovereign-cloud.customEnvironment');
+			}
+			return undefined;
+		}
+		authProviderName = customEnv.name;
+	} else {
+		authProviderName = environment;
+	}
 
-	return;
+	const env = Environment.get(authProviderName);
+	if (!env) {
+		await window.showErrorMessage(l10n.t('The environment `{0}` is not a valid environment.', authProviderName), l10n.t('Open settings'));
+		return undefined;
+	}
+
+	const authProvider = await MsalAuthProvider.create(
+		context,
+		new MicrosoftSovereignCloudAuthenticationTelemetryReporter(context.extension.packageJSON.aiKey),
+		window.createOutputChannel(l10n.t('Microsoft Sovereign Cloud Authentication'), { log: true }),
+		uriHandler,
+		env
+	);
+	const disposable = authentication.registerAuthenticationProvider(
+		'microsoft-sovereign-cloud',
+		authProviderName,
+		authProvider,
+		{ supportsMultipleAccounts: true, supportsChallenges: true }
+	);
+	context.subscriptions.push(disposable);
+	return disposable;
 }
 
-// this method is called when your extension is deactivated
-export function deactivate() { }
+export async function activate(context: ExtensionContext) {
+	const mainTelemetryReporter = new MicrosoftAuthenticationTelemetryReporter(context.extension.packageJSON.aiKey);
+	implementation = getImplementation();
+	context.subscriptions.push(workspace.onDidChangeConfiguration(async e => {
+		if (!e.affectsConfiguration('microsoft-authentication')) {
+			return;
+		}
+		if (implementation === getImplementation()) {
+			return;
+		}
+
+		// Allow for the migration to be re-attempted if the user switches back to the MSAL implementation
+		context.globalState.update('msalMigration', undefined);
+
+		const reload = l10n.t('Reload');
+		const result = await window.showInformationMessage(
+			'Reload required',
+			{
+				modal: true,
+				detail: l10n.t('Microsoft Account configuration has been changed.'),
+			},
+			reload
+		);
+
+		if (result === reload) {
+			commands.executeCommand('workbench.action.reloadWindow');
+		}
+	}));
+
+	switch (implementation) {
+		case 'msal-no-broker':
+			mainTelemetryReporter.sendActivatedWithMsalNoBrokerEvent();
+			break;
+		case 'msal':
+		default:
+			break;
+	}
+
+	const uriHandler = new UriEventHandler();
+	context.subscriptions.push(uriHandler);
+	const authProvider = await MsalAuthProvider.create(
+		context,
+		mainTelemetryReporter,
+		Logger,
+		uriHandler
+	);
+	context.subscriptions.push(authentication.registerAuthenticationProvider(
+		'microsoft',
+		'Microsoft',
+		authProvider,
+		{
+			supportsMultipleAccounts: true,
+			supportsChallenges: true,
+			supportedAuthorizationServers: [
+				Uri.parse('https://login.microsoftonline.com/*'),
+				Uri.parse('https://login.microsoftonline.com/*/v2.0')
+			]
+		}
+	));
+
+	let microsoftSovereignCloudAuthProviderDisposable = await initMicrosoftSovereignCloudAuthProvider(context, uriHandler);
+
+	context.subscriptions.push(workspace.onDidChangeConfiguration(async e => {
+		if (e.affectsConfiguration('microsoft-sovereign-cloud')) {
+			microsoftSovereignCloudAuthProviderDisposable?.dispose();
+			microsoftSovereignCloudAuthProviderDisposable = await initMicrosoftSovereignCloudAuthProvider(context, uriHandler);
+		}
+	}));
+}
+
+export function deactivate() {
+	Logger.info('Microsoft Authentication is deactivating...');
+}

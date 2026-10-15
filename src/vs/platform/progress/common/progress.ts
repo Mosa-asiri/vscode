@@ -3,11 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { IAction } from 'vs/base/common/actions';
-import { DeferredPromise } from 'vs/base/common/async';
-import { CancellationToken, CancellationTokenSource } from 'vs/base/common/cancellation';
-import { Disposable, DisposableStore, toDisposable } from 'vs/base/common/lifecycle';
-import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
+import { IAction } from '../../../base/common/actions.js';
+import { DeferredPromise } from '../../../base/common/async.js';
+import { CancellationToken, CancellationTokenSource } from '../../../base/common/cancellation.js';
+import { Disposable, DisposableStore, toDisposable } from '../../../base/common/lifecycle.js';
+import { createDecorator } from '../../instantiation/common/instantiation.js';
+import { INotificationSource, NotificationPriority } from '../../notification/common/notification.js';
 
 export const IProgressService = createDecorator<IProgressService>('progressService');
 
@@ -52,9 +53,9 @@ export const enum ProgressLocation {
 export interface IProgressOptions {
 	readonly location: ProgressLocation | string;
 	readonly title?: string;
-	readonly source?: string | { label: string; id: string };
+	readonly source?: string | INotificationSource;
 	readonly total?: number;
-	readonly cancellable?: boolean;
+	readonly cancellable?: boolean | string;
 	readonly buttons?: string[];
 }
 
@@ -63,7 +64,8 @@ export interface IProgressNotificationOptions extends IProgressOptions {
 	readonly primaryActions?: readonly IAction[];
 	readonly secondaryActions?: readonly IAction[];
 	readonly delay?: number;
-	readonly silent?: boolean;
+	readonly priority?: NotificationPriority;
+	readonly type?: 'loading' | 'syncing';
 }
 
 export interface IProgressDialogOptions extends IProgressOptions {
@@ -75,6 +77,7 @@ export interface IProgressDialogOptions extends IProgressOptions {
 export interface IProgressWindowOptions extends IProgressOptions {
 	readonly location: ProgressLocation.Window;
 	readonly command?: string;
+	readonly type?: 'loading' | 'syncing';
 }
 
 export interface IProgressCompositeOptions extends IProgressOptions {
@@ -111,7 +114,8 @@ export class Progress<T> implements IProgress<T> {
 	private _value?: T;
 	get value(): T | undefined { return this._value; }
 
-	constructor(private callback: (data: T) => void) { }
+	constructor(private callback: (data: T) => unknown) {
+	}
 
 	report(item: T) {
 		this._value = item;
@@ -169,7 +173,7 @@ export class LongRunningOperation extends Disposable {
 	private currentOperationId = 0;
 	private readonly currentOperationDisposables = this._register(new DisposableStore());
 	private currentProgressRunner: IProgressRunner | undefined;
-	private currentProgressTimeout: any;
+	private currentProgressTimeout: Timeout | undefined = undefined;
 
 	constructor(
 		private progressIndicator: IProgressIndicator

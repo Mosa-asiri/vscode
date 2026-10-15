@@ -7,13 +7,17 @@ import * as vscode from 'vscode';
 import { equals } from '../util/arrays';
 
 export class MarkdownPreviewConfiguration {
-	public static getForResource(resource: vscode.Uri) {
+	public static getForResource(resource: vscode.Uri | null) {
 		return new MarkdownPreviewConfiguration(resource);
 	}
 
 	public readonly scrollBeyondLastLine: boolean;
 	public readonly wordWrap: boolean;
-	public readonly lineBreaks: boolean;
+
+	public readonly previewLineBreaks: boolean;
+	public readonly previewLinkify: boolean;
+	public readonly previewTypographer: boolean;
+
 	public readonly doubleClickToSwitchToEditor: boolean;
 	public readonly scrollEditorWithPreview: boolean;
 	public readonly scrollPreviewWithEditor: boolean;
@@ -24,7 +28,7 @@ export class MarkdownPreviewConfiguration {
 	public readonly fontFamily: string | undefined;
 	public readonly styles: readonly string[];
 
-	private constructor(resource: vscode.Uri) {
+	private constructor(resource: vscode.Uri | null) {
 		const editorConfig = vscode.workspace.getConfiguration('editor', resource);
 		const markdownConfig = vscode.workspace.getConfiguration('markdown', resource);
 		const markdownEditorConfig = vscode.workspace.getConfiguration('[markdown]', resource);
@@ -32,13 +36,17 @@ export class MarkdownPreviewConfiguration {
 		this.scrollBeyondLastLine = editorConfig.get<boolean>('scrollBeyondLastLine', false);
 
 		this.wordWrap = editorConfig.get<string>('wordWrap', 'off') !== 'off';
-		if (markdownEditorConfig && markdownEditorConfig['editor.wordWrap']) {
+		if (markdownEditorConfig?.['editor.wordWrap']) {
 			this.wordWrap = markdownEditorConfig['editor.wordWrap'] !== 'off';
 		}
 
 		this.scrollPreviewWithEditor = !!markdownConfig.get<boolean>('preview.scrollPreviewWithEditor', true);
 		this.scrollEditorWithPreview = !!markdownConfig.get<boolean>('preview.scrollEditorWithPreview', true);
-		this.lineBreaks = !!markdownConfig.get<boolean>('preview.breaks', false);
+
+		this.previewLineBreaks = !!markdownConfig.get<boolean>('preview.breaks', false);
+		this.previewLinkify = !!markdownConfig.get<boolean>('preview.linkify', true);
+		this.previewTypographer = !!markdownConfig.get<boolean>('preview.typographer', false);
+
 		this.doubleClickToSwitchToEditor = !!markdownConfig.get<boolean>('preview.doubleClickToSwitchToEditor', true);
 		this.markEditorSelection = !!markdownConfig.get<boolean>('preview.markEditorSelection', true);
 
@@ -61,30 +69,28 @@ export class MarkdownPreviewConfiguration {
 		return equals(this.styles, otherConfig.styles);
 	}
 
-	[key: string]: any;
+	readonly [key: string]: any;
 }
 
 export class MarkdownPreviewConfigurationManager {
-	private readonly previewConfigurationsForWorkspaces = new Map<string, MarkdownPreviewConfiguration>();
+	readonly #previewConfigurationsForWorkspaces = new Map<string, MarkdownPreviewConfiguration>();
 
 	public loadAndCacheConfiguration(
 		resource: vscode.Uri
 	): MarkdownPreviewConfiguration {
 		const config = MarkdownPreviewConfiguration.getForResource(resource);
-		this.previewConfigurationsForWorkspaces.set(this.getKey(resource), config);
+		this.#previewConfigurationsForWorkspaces.set(this.#getKey(resource), config);
 		return config;
 	}
 
-	public hasConfigurationChanged(
-		resource: vscode.Uri
-	): boolean {
-		const key = this.getKey(resource);
-		const currentConfig = this.previewConfigurationsForWorkspaces.get(key);
+	public hasConfigurationChanged(resource: vscode.Uri): boolean {
+		const key = this.#getKey(resource);
+		const currentConfig = this.#previewConfigurationsForWorkspaces.get(key);
 		const newConfig = MarkdownPreviewConfiguration.getForResource(resource);
-		return (!currentConfig || !currentConfig.isEqualTo(newConfig));
+		return !currentConfig?.isEqualTo(newConfig);
 	}
 
-	private getKey(
+	#getKey(
 		resource: vscode.Uri
 	): string {
 		const folder = vscode.workspace.getWorkspaceFolder(resource);

@@ -5,6 +5,57 @@
 
 /* Container */
 
+/* Editor depth shadows - the ::after pseudo-element draws inset shadows on each edge,
+ * creating the illusion that sidebar, panel, and auxiliarybar float above it. */
+.monaco-workbench.vs .part.editor {
+	position: relative;
+}
+
+.monaco-workbench.vs .part.editor::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	z-index: 10;
+	box-shadow:
+		inset var(--vscode-shadow-depth-x),
+		inset calc(-1 * 5px) 0 10px -4px rgba(0, 0, 0, 0.04),
+		inset 0 calc(-1 * 5px) 10px -4px rgba(0, 0, 0, 0.05);
+}
+
+/* When sidebar is on the right, flip the stronger shadow to the right edge */
+.monaco-workbench.sidebar-right.vs .part.editor::after {
+	box-shadow:
+		inset 5px 0 10px -4px rgba(0, 0, 0, 0.04),
+		inset calc(-1 * 5px) 0 10px -4px rgba(0, 0, 0, 0.05),
+		inset 0 calc(-1 * 5px) 10px -4px rgba(0, 0, 0, 0.05);
+}
+
+/* Panel positions: strengthen the shadow on whichever edge faces the panel */
+.monaco-workbench.panel-position-left.vs .part.editor::after {
+	box-shadow:
+		inset var(--vscode-shadow-depth-x),
+		inset calc(-1 * 5px) 0 10px -4px rgba(0, 0, 0, 0.04);
+}
+
+.monaco-workbench.panel-position-right.vs .part.editor::after {
+	box-shadow:
+		inset 5px 0 10px -4px rgba(0, 0, 0, 0.04),
+		inset calc(-1 * 5px) 0 10px -4px rgba(0, 0, 0, 0.05);
+}
+
+.monaco-workbench.panel-position-top.vs .part.editor::after {
+	box-shadow:
+		inset var(--vscode-shadow-depth-x),
+		inset calc(-1 * 5px) 0 10px -4px rgba(0, 0, 0, 0.04),
+		inset 0 var(--vscode-shadow-depth-y);
+}
+
+/* Must appear after positional variants so source-order wins at equal specificity */
+.monaco-workbench.no-shadows.vs .part.editor::after {
+	box-shadow: none;
+}
+
 .monaco-workbench .part.editor > .content .editor-group-container {
 	height: 100%;
 }
@@ -18,33 +69,114 @@
 	opacity: 1; /* indicate active/dragged-over group through undimmed state */
 }
 
-/* Letterpress */
-
-.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-letterpress  {
-	display: none; /* only visible when empty */
+.monaco-workbench .part.editor > .content:not(.empty) .editor-group-container.empty.active:focus {
+	outline-offset: -2px;
+	outline: 1px solid var(--vscode-editorGroup-focusedEmptyBorder);
 }
 
-.monaco-workbench .part.editor > .content .editor-group-container.empty > .editor-group-letterpress  {
-	display: block;
+.monaco-workbench .part.editor > .content.empty .editor-group-container.empty.active:focus {
+	outline: none; /* never show outline for empty group if it is the last */
+}
+
+/* Watermark & shortcuts */
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark  {
+	display: flex;
+	height: 100%;
+	max-width: 272px;
 	margin: auto;
-	width: 100%;
-	height: calc(100% - 70px); /* centered below toolbar */
-	max-width: 260px;
-	background-repeat: no-repeat;
-	background-position: 50% 50%;
-	background-size: 70% 70%;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
 }
 
-.monaco-workbench .part.editor > .content.empty .editor-group-container.empty > .editor-group-letterpress  {
-	background-size: 100% 100%; /* larger for empty editor part */
-	height: 100%; /* no toolbar in this case */
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark > .watermark-container {
+	display: flex;
+	width: 100%;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 24px;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container:not(.empty) > .editor-group-watermark {
+	display: none;
+}
+
+.monaco-workbench .part.editor > .content:not(.empty) .editor-group-container.empty > .editor-group-watermark,
+.monaco-workbench .part.editor > .content.auxiliary .editor-group-container.empty > .editor-group-watermark {
+	max-width: 200px;
+	height: calc(100% - 70px);
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .letterpress {
+	width: 100%;
+	max-height: 100%;
+	aspect-ratio: 1/1;
+	background-image: url('./letterpress-light.svg');
+	background-size: contain;
+	background-position-x: center;
+	background-repeat: no-repeat;
+	max-width: 256px;
+}
+
+.monaco-workbench.vs-dark .part.editor > .content .editor-group-container .editor-group-watermark .letterpress {
+	background-image: url('./letterpress-dark.svg');
+}
+
+.monaco-workbench.hc-light .part.editor > .content .editor-group-container .editor-group-watermark .letterpress {
+	background-image: url('./letterpress-hcLight.svg');
+}
+
+.monaco-workbench.hc-black .part.editor > .content .editor-group-container .editor-group-watermark .letterpress {
+	background-image: url('./letterpress-hcDark.svg');
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts {
+	width: 100%;
+}
+
+.monaco-workbench .part.editor > .content:not(.empty) .editor-group-container > .editor-group-watermark .shortcuts,
+.monaco-workbench .part.editor > .content.auxiliary .editor-group-container > .editor-group-watermark .shortcuts,
+.monaco-workbench .part.editor > .content .editor-group-container.max-height-478px > .editor-group-watermark .shortcuts {
+	display: none;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts > .watermark-box {
+	display: flex;
+	flex-direction: column;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts dl {
+	display: flex;
+	justify-content: space-between;
+	margin: 4px 0;
+	cursor: default;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts dl:first-of-type {
+	margin-top: 0;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts dl:last-of-type {
+	margin-bottom: 0;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts dt {
+	letter-spacing: 0.04em;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts dd {
+	text-align: left;
+	margin-inline-start: 24px;
 }
 
 /* Title */
 
 .monaco-workbench .part.editor > .content .editor-group-container > .title {
 	position: relative;
-	box-sizing:	border-box;
+	box-sizing: border-box;
 	overflow: hidden;
 }
 
@@ -76,8 +208,10 @@
 	height: 35px;
 }
 
-.monaco-workbench .part.editor > .content:not(.empty) .editor-group-container.empty > .editor-group-container-toolbar {
-	display: block;
+.monaco-workbench .part.editor > .content .editor-group-container.empty.locked > .editor-group-container-toolbar,
+.monaco-workbench .part.editor > .content:not(.empty) .editor-group-container.empty > .editor-group-container-toolbar,
+.monaco-workbench .part.editor > .content.auxiliary .editor-group-container.empty > .editor-group-container-toolbar {
+	display: block; /* show toolbar when more than one editor group or always when auxiliary or locked */
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-container-toolbar .actions-container {
@@ -90,7 +224,7 @@
 
 /* Editor */
 
-.monaco-workbench .part.editor > .content .editor-group-container.empty > .editor-container  {
+.monaco-workbench .part.editor > .content .editor-group-container.empty > .editor-container {
 	display: none;
 }
 

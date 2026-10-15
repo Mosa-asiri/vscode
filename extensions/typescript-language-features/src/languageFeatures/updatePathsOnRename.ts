@@ -5,20 +5,18 @@
 
 import * as path from 'path';
 import * as vscode from 'vscode';
-import * as nls from 'vscode-nls';
-import type * as Proto from '../protocol';
+import * as fileSchemes from '../configuration/fileSchemes';
+import { doesResourceLookLikeATypeScriptFile } from '../configuration/languageDescription';
+import type * as Proto from '../tsServer/protocol/protocol';
+import * as typeConverters from '../typeConverters';
 import { ClientCapability, ITypeScriptServiceClient } from '../typescriptService';
-import API from '../utils/api';
 import { Delayer } from '../utils/async';
 import { nulToken } from '../utils/cancellation';
-import { conditionalRegistration, requireMinVersion, requireSomeCapability } from '../utils/dependentRegistration';
+import { readUnifiedConfig, unifiedConfigSection } from '../utils/configuration';
 import { Disposable } from '../utils/dispose';
-import * as fileSchemes from '../utils/fileSchemes';
-import { doesResourceLookLikeATypeScriptFile } from '../utils/languageDescription';
-import * as typeConverters from '../utils/typeConverters';
 import FileConfigurationManager from './fileConfigurationManager';
+import { conditionalRegistration, requireSomeCapability } from './util/dependentRegistration';
 
-const localize = nls.loadMessageBundle();
 
 const updateImportsOnFileMoveName = 'updateImportsOnFileMove.enabled';
 
@@ -45,7 +43,6 @@ interface RenameAction {
 }
 
 class UpdateImportsOnFileRenameHandler extends Disposable {
-	public static readonly minVersion = API.v300;
 
 	private readonly _delayer = new Delayer(50);
 	private readonly _pendingRenames = new Set<RenameAction>();
@@ -58,38 +55,39 @@ class UpdateImportsOnFileRenameHandler extends Disposable {
 		super();
 
 		this._register(vscode.workspace.onDidRenameFiles(async (e) => {
-			const [{ newUri, oldUri }] = e.files;
-			const newFilePath = this.client.toPath(newUri);
-			if (!newFilePath) {
-				return;
+			for (const { newUri, oldUri } of e.files) {
+				const newFilePath = this.client.toTsFilePath(newUri);
+				if (!newFilePath) {
+					continue;
+				}
+
+				const oldFilePath = this.client.toTsFilePath(oldUri);
+				if (!oldFilePath) {
+					continue;
+				}
+
+				const fallbackSection = doesResourceLookLikeATypeScriptFile(newUri) ? 'typescript' : 'javascript';
+				const setting = readUnifiedConfig<UpdateImportsOnFileMoveSetting>(updateImportsOnFileMoveName, UpdateImportsOnFileMoveSetting.Prompt, { scope: null, fallbackSection });
+				if (setting === UpdateImportsOnFileMoveSetting.Never) {
+					continue;
+				}
+
+				// Try to get a js/ts file that is being moved
+				// For directory moves, this returns a js/ts file under the directory.
+				const jsTsFileThatIsBeingMoved = await this.getJsTsFileBeingMoved(newUri);
+				if (!jsTsFileThatIsBeingMoved || !this.client.toTsFilePath(jsTsFileThatIsBeingMoved)) {
+					continue;
+				}
+
+				this._pendingRenames.add({ oldUri, newUri, newFilePath, oldFilePath, jsTsFileThatIsBeingMoved });
+
+				this._delayer.trigger(() => {
+					vscode.window.withProgress({
+						location: vscode.ProgressLocation.Window,
+						title: vscode.l10n.t("Checking for update of JS/TS imports")
+					}, () => this.flushRenames());
+				});
 			}
-
-			const oldFilePath = this.client.toPath(oldUri);
-			if (!oldFilePath) {
-				return;
-			}
-
-			const config = this.getConfiguration(newUri);
-			const setting = config.get<UpdateImportsOnFileMoveSetting>(updateImportsOnFileMoveName);
-			if (setting === UpdateImportsOnFileMoveSetting.Never) {
-				return;
-			}
-
-			// Try to get a js/ts file that is being moved
-			// For directory moves, this returns a js/ts file under the directory.
-			const jsTsFileThatIsBeingMoved = await this.getJsTsFileBeingMoved(newUri);
-			if (!jsTsFileThatIsBeingMoved || !this.client.toPath(jsTsFileThatIsBeingMoved)) {
-				return;
-			}
-
-			this._pendingRenames.add({ oldUri, newUri, newFilePath, oldFilePath, jsTsFileThatIsBeingMoved });
-
-			this._delayer.trigger(() => {
-				vscode.window.withProgress({
-					location: vscode.ProgressLocation.Window,
-					title: localize('renameProgress.title', "Checking for update of JS/TS imports")
-				}, () => this.flushRenames());
-			});
 		}));
 	}
 
@@ -114,7 +112,7 @@ class UpdateImportsOnFileRenameHandler extends Disposable {
 
 			if (edits.size) {
 				if (await this.confirmActionWithUser(resourcesBeingRenamed)) {
-					await vscode.workspace.applyEdit(edits);
+					await vscode.workspace.applyEdit(edits, { isRefactoring: true });
 				}
 			}
 		}
@@ -125,8 +123,8 @@ class UpdateImportsOnFileRenameHandler extends Disposable {
 			return false;
 		}
 
-		const config = this.getConfiguration(newResources[0]);
-		const setting = config.get<UpdateImportsOnFileMoveSetting>(updateImportsOnFileMoveName);
+		const fallbackSection = doesResourceLookLikeATypeScriptFile(newResources[0]) ? 'typescript' : 'javascript';
+		const setting = readUnifiedConfig<UpdateImportsOnFileMoveSetting>(updateImportsOnFileMoveName, UpdateImportsOnFileMoveSetting.Prompt, { scope: null, fallbackSection });
 		switch (setting) {
 			case UpdateImportsOnFileMoveSetting.Always:
 				return true;
@@ -138,82 +136,63 @@ class UpdateImportsOnFileRenameHandler extends Disposable {
 		}
 	}
 
-	private getConfiguration(resource: vscode.Uri) {
-		return vscode.workspace.getConfiguration(doesResourceLookLikeATypeScriptFile(resource) ? 'typescript' : 'javascript', resource);
-	}
-
 	private async promptUser(newResources: readonly vscode.Uri[]): Promise<boolean> {
 		if (!newResources.length) {
 			return false;
 		}
 
-		const enum Choice {
-			None = 0,
-			Accept = 1,
-			Reject = 2,
-			Always = 3,
-			Never = 4,
-		}
-
-		interface Item extends vscode.MessageItem {
-			readonly choice: Choice;
-		}
-
-
-		const response = await vscode.window.showInformationMessage<Item>(
-			newResources.length === 1
-				? localize('prompt', "Update imports for '{0}'?", path.basename(newResources[0].fsPath))
-				: this.getConfirmMessage(localize('promptMoreThanOne', "Update imports for the following {0} files?", newResources.length), newResources), {
-			modal: true,
-		}, {
-			title: localize('reject.title', "No"),
-			choice: Choice.Reject,
+		const rejectItem: vscode.MessageItem = {
+			title: vscode.l10n.t("No"),
 			isCloseAffordance: true,
-		}, {
-			title: localize('accept.title', "Yes"),
-			choice: Choice.Accept,
-		}, {
-			title: localize('always.title', "Always automatically update imports"),
-			choice: Choice.Always,
-		}, {
-			title: localize('never.title', "Never automatically update imports"),
-			choice: Choice.Never,
-		});
+		};
 
-		if (!response) {
-			return false;
+		const acceptItem: vscode.MessageItem = {
+			title: vscode.l10n.t("Yes"),
+		};
+
+		const alwaysItem: vscode.MessageItem = {
+			title: vscode.l10n.t("Always"),
+		};
+
+		const neverItem: vscode.MessageItem = {
+			title: vscode.l10n.t("Never"),
+		};
+
+		const response = await vscode.window.showInformationMessage(
+			newResources.length === 1
+				? vscode.l10n.t("Update imports for '{0}'?", path.basename(newResources[0].fsPath))
+				: this.getConfirmMessage(vscode.l10n.t("Update imports for the following {0} files?", newResources.length), newResources), {
+			modal: true,
+		}, rejectItem, acceptItem, alwaysItem, neverItem);
+
+
+		switch (response) {
+			case acceptItem: {
+				return true;
+			}
+			case rejectItem: {
+				return false;
+			}
+			case alwaysItem: {
+				const config = vscode.workspace.getConfiguration(unifiedConfigSection);
+				config.update(
+					updateImportsOnFileMoveName,
+					UpdateImportsOnFileMoveSetting.Always,
+					this.getConfigTargetScope(config, updateImportsOnFileMoveName));
+				return true;
+			}
+			case neverItem: {
+				const config = vscode.workspace.getConfiguration(unifiedConfigSection);
+				config.update(
+					updateImportsOnFileMoveName,
+					UpdateImportsOnFileMoveSetting.Never,
+					this.getConfigTargetScope(config, updateImportsOnFileMoveName));
+				return false;
+			}
+			default: {
+				return false;
+			}
 		}
-
-		switch (response.choice) {
-			case Choice.Accept:
-				{
-					return true;
-				}
-			case Choice.Reject:
-				{
-					return false;
-				}
-			case Choice.Always:
-				{
-					const config = this.getConfiguration(newResources[0]);
-					config.update(
-						updateImportsOnFileMoveName,
-						UpdateImportsOnFileMoveSetting.Always,
-						vscode.ConfigurationTarget.Global);
-					return true;
-				}
-			case Choice.Never:
-				{
-					const config = this.getConfiguration(newResources[0]);
-					config.update(
-						updateImportsOnFileMoveName,
-						UpdateImportsOnFileMoveSetting.Never,
-						vscode.ConfigurationTarget.Global);
-					return false;
-				}
-		}
-
-		return false;
 	}
 
 	private async getJsTsFileBeingMoved(resource: vscode.Uri): Promise<vscode.Uri | undefined> {
@@ -256,7 +235,7 @@ class UpdateImportsOnFileRenameHandler extends Disposable {
 
 		for (const rename of renames) {
 			// Group renames by type (js/ts) and by workspace.
-			const key = `${this.client.getWorkspaceRootForResource(rename.jsTsFileThatIsBeingMoved)}@@@${doesResourceLookLikeATypeScriptFile(rename.jsTsFileThatIsBeingMoved)}`;
+			const key = `${this.client.getWorkspaceRootForResource(rename.jsTsFileThatIsBeingMoved)?.fsPath}@@@${doesResourceLookLikeATypeScriptFile(rename.jsTsFileThatIsBeingMoved)}`;
 			if (!groups.has(key)) {
 				groups.set(key, new Set());
 			}
@@ -275,14 +254,27 @@ class UpdateImportsOnFileRenameHandler extends Disposable {
 
 		if (resourcesToConfirm.length > MAX_CONFIRM_FILES) {
 			if (resourcesToConfirm.length - MAX_CONFIRM_FILES === 1) {
-				paths.push(localize('moreFile', "...1 additional file not shown"));
+				paths.push(vscode.l10n.t("...1 additional file not shown"));
 			} else {
-				paths.push(localize('moreFiles', "...{0} additional files not shown", resourcesToConfirm.length - MAX_CONFIRM_FILES));
+				paths.push(vscode.l10n.t("...{0} additional files not shown", resourcesToConfirm.length - MAX_CONFIRM_FILES));
 			}
 		}
 
 		paths.push('');
 		return paths.join('\n');
+	}
+
+	private getConfigTargetScope(config: vscode.WorkspaceConfiguration, settingsName: string): vscode.ConfigurationTarget {
+		const inspected = config.inspect(settingsName);
+		if (inspected?.workspaceFolderValue) {
+			return vscode.ConfigurationTarget.WorkspaceFolder;
+		}
+
+		if (inspected?.workspaceValue) {
+			return vscode.ConfigurationTarget.Workspace;
+		}
+
+		return vscode.ConfigurationTarget.Global;
 	}
 }
 
@@ -292,7 +284,6 @@ export function register(
 	handles: (uri: vscode.Uri) => Promise<boolean>,
 ) {
 	return conditionalRegistration([
-		requireMinVersion(client, UpdateImportsOnFileRenameHandler.minVersion),
 		requireSomeCapability(client, ClientCapability.Semantic),
 	], () => {
 		return new UpdateImportsOnFileRenameHandler(client, fileConfigurationManager, handles);

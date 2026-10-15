@@ -3,54 +3,72 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { app, BrowserWindow } from 'electron';
-import { coalesce } from 'vs/base/common/arrays';
-import { IProcessEnvironment, isMacintosh } from 'vs/base/common/platform';
-import { assertIsDefined } from 'vs/base/common/types';
-import { URI } from 'vs/base/common/uri';
-import { whenDeleted } from 'vs/base/node/pfs';
-import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
-import { NativeParsedArgs } from 'vs/platform/environment/common/argv';
-import { isLaunchedFromCli } from 'vs/platform/environment/node/argvHelper';
-import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
-import { IMainProcessInfo, IWindowInfo } from 'vs/platform/launch/common/launch';
-import { ILogService } from 'vs/platform/log/common/log';
-import { IURLService } from 'vs/platform/url/common/url';
-import { ICodeWindow } from 'vs/platform/window/electron-main/window';
-import { IWindowSettings } from 'vs/platform/window/common/window';
-import { IOpenConfiguration, IWindowsMainService, OpenContext } from 'vs/platform/windows/electron-main/windows';
-import { isSingleFolderWorkspaceIdentifier, isWorkspaceIdentifier } from 'vs/platform/workspace/common/workspace';
-import { IWorkspacesManagementMainService } from 'vs/platform/workspaces/electron-main/workspacesManagementMainService';
+import { app } from 'electron';
+import { coalesce } from '../../../base/common/arrays.js';
+import { Emitter, Event } from '../../../base/common/event.js';
+import { IProcessEnvironment, isMacintosh } from '../../../base/common/platform.js';
+import { URI } from '../../../base/common/uri.js';
+import { whenDeleted } from '../../../base/node/pfs.js';
+import { IConfigurationService } from '../../configuration/common/configuration.js';
+import { NativeParsedArgs } from '../../environment/common/argv.js';
+import { isLaunchedFromCli } from '../../environment/node/argvHelper.js';
+import { createDecorator } from '../../instantiation/common/instantiation.js';
+import { ILogService } from '../../log/common/log.js';
+import { IURLService } from '../../url/common/url.js';
+import { ICodeWindow } from '../../window/electron-main/window.js';
+import { IWindowSettings } from '../../window/common/window.js';
+import { IOpenConfiguration, IWindowsMainService, OpenContext } from '../../windows/electron-main/windows.js';
+import { IProtocolUrl } from '../../url/electron-main/url.js';
+import { IProductService } from '../../product/common/productService.js';
 
 export const ID = 'launchMainService';
 export const ILaunchMainService = createDecorator<ILaunchMainService>(ID);
 
 export interface IStartArguments {
-	args: NativeParsedArgs;
-	userEnv: IProcessEnvironment;
+	readonly args: NativeParsedArgs;
+	readonly userEnv: IProcessEnvironment;
 }
 
 export interface ILaunchMainService {
+
 	readonly _serviceBrand: undefined;
+
 	start(args: NativeParsedArgs, userEnv: IProcessEnvironment): Promise<void>;
+
 	getMainProcessId(): Promise<number>;
-	getMainProcessInfo(): Promise<IMainProcessInfo>;
+
+	/**
+	 * Fires when a second instance sends `--share-secrets-with-agents-app`.
+	 * Used for cross-app secret migration.
+	 */
+	readonly onDidRequestShareSecrets: Event<void>;
 }
 
 export class LaunchMainService implements ILaunchMainService {
 
 	declare readonly _serviceBrand: undefined;
 
+	private readonly _onDidRequestShareSecrets = new Emitter<void>();
+	readonly onDidRequestShareSecrets: Event<void> = this._onDidRequestShareSecrets.event;
+
 	constructor(
 		@ILogService private readonly logService: ILogService,
 		@IWindowsMainService private readonly windowsMainService: IWindowsMainService,
 		@IURLService private readonly urlService: IURLService,
-		@IWorkspacesManagementMainService private readonly workspacesManagementMainService: IWorkspacesManagementMainService,
-		@IConfigurationService private readonly configurationService: IConfigurationService
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IProductService private readonly productService: IProductService,
 	) { }
 
 	async start(args: NativeParsedArgs, userEnv: IProcessEnvironment): Promise<void> {
 		this.logService.trace('Received data from other instance: ', args, userEnv);
+
+		// Handle --share-secrets-with-agents-app from a second instance:
+		// trigger the secret sharing handshake without opening any window.
+		if (args['share-secrets-with-agents-app']) {
+			this.logService.info('Received --share-secrets-with-agents-app from second instance');
+			this._onDidRequestShareSecrets.fire();
+			return;
+		}
 
 		// macOS: Electron > 7.x changed its behaviour to not
 		// bring the application to the foreground when a window
@@ -72,14 +90,16 @@ export class LaunchMainService implements ILaunchMainService {
 
 			// Create a window if there is none
 			if (this.windowsMainService.getWindowCount() === 0) {
-				const window = this.windowsMainService.openEmptyWindow({ context: OpenContext.DESKTOP })[0];
-				whenWindowReady = window.ready();
+				const window = (await this.windowsMainService.openEmptyWindow({ context: OpenContext.DESKTOP })).at(0);
+				if (window) {
+					whenWindowReady = window.ready();
+				}
 			}
 
 			// Make sure a window is open, ready to receive the url event
 			whenWindowReady.then(() => {
-				for (const { uri, url } of urlsToOpen) {
-					this.urlService.open(uri, { originalUrl: url });
+				for (const { uri, originalUrl } of urlsToOpen) {
+					this.urlService.open(uri, { originalUrl });
 				}
 			});
 		}
@@ -90,14 +110,16 @@ export class LaunchMainService implements ILaunchMainService {
 		}
 	}
 
-	private parseOpenUrl(args: NativeParsedArgs): { uri: URI; url: string }[] {
+	private parseOpenUrl(args: NativeParsedArgs): IProtocolUrl[] {
 		if (args['open-url'] && args._urls && args._urls.length > 0) {
+
 			// --open-url must contain -- followed by the url(s)
 			// process.argv is used over args._ as args._ are resolved to file paths at this point
+
 			return coalesce(args._urls
 				.map(url => {
 					try {
-						return { uri: URI.parse(url), url };
+						return { uri: URI.parse(url), originalUrl: url };
 					} catch (err) {
 						return null;
 					}
@@ -109,6 +131,7 @@ export class LaunchMainService implements ILaunchMainService {
 
 	private async startOpenWindow(args: NativeParsedArgs, userEnv: IProcessEnvironment): Promise<void> {
 		const context = isLaunchedFromCli(userEnv) ? OpenContext.CLI : OpenContext.DESKTOP;
+
 		let usedWindows: ICodeWindow[] = [];
 
 		const waitMarkerFileURI = args.wait && args.waitMarkerFilePath ? URI.file(args.waitMarkerFilePath) : undefined;
@@ -117,14 +140,32 @@ export class LaunchMainService implements ILaunchMainService {
 		const baseConfig: IOpenConfiguration = {
 			context,
 			cli: args,
-			userEnv,
+			/**
+			 * When opening a new window from a second instance that sent args and env
+			 * over to this instance, we want to preserve the environment only if that second
+			 * instance was spawned from the CLI or used the `--preserve-env` flag (example:
+			 * when using `open -n "VSCode.app" --args --preserve-env WORKSPACE_FOLDER`).
+			 *
+			 * This is done to ensure that the second window gets treated exactly the same
+			 * as the first window, for example, it gets the same resolved user shell environment.
+			 *
+			 * https://github.com/microsoft/vscode/issues/194736
+			 */
+			userEnv: (args['preserve-env'] || context === OpenContext.CLI) ? userEnv : undefined,
 			waitMarkerFileURI,
-			remoteAuthority
+			remoteAuthority,
+			forceProfile: args.profile,
+			forceTempProfile: args['profile-temp']
 		};
 
 		// Special case extension development
-		if (!!args.extensionDevelopmentPath) {
-			this.windowsMainService.openExtensionDevelopmentHostWindow(args.extensionDevelopmentPath, baseConfig);
+		if (args.extensionDevelopmentPath) {
+			await this.windowsMainService.openExtensionDevelopmentHostWindow(args.extensionDevelopmentPath, baseConfig);
+		}
+
+		// Agents window
+		else if (args['agents'] && this.productService.quality !== 'stable') {
+			usedWindows = await this.windowsMainService.openAgentsWindow(baseConfig);
 		}
 
 		// Start without file/folder arguments
@@ -132,7 +173,7 @@ export class LaunchMainService implements ILaunchMainService {
 			let openNewWindow = false;
 
 			// Force new window
-			if (args['new-window'] || args['unity-launch']) {
+			if (args['new-window'] || baseConfig.forceProfile || baseConfig.forceTempProfile) {
 				openNewWindow = true;
 			}
 
@@ -159,7 +200,7 @@ export class LaunchMainService implements ILaunchMainService {
 
 			// Open new Window
 			if (openNewWindow) {
-				usedWindows = this.windowsMainService.open({
+				usedWindows = await this.windowsMainService.open({
 					...baseConfig,
 					forceNewWindow: true,
 					forceEmpty: true
@@ -174,7 +215,7 @@ export class LaunchMainService implements ILaunchMainService {
 
 					usedWindows = [lastActive];
 				} else {
-					usedWindows = this.windowsMainService.open({
+					usedWindows = await this.windowsMainService.open({
 						...baseConfig,
 						forceEmpty: true
 					});
@@ -184,13 +225,15 @@ export class LaunchMainService implements ILaunchMainService {
 
 		// Start with file/folder arguments
 		else {
-			usedWindows = this.windowsMainService.open({
+			usedWindows = await this.windowsMainService.open({
 				...baseConfig,
 				forceNewWindow: args['new-window'],
 				preferNewWindow: !args['reuse-window'] && !args.wait,
 				forceReuseWindow: args['reuse-window'],
 				diffMode: args.diff,
+				mergeMode: args.merge,
 				addMode: args.add,
+				removeMode: args.remove,
 				noRecentEntry: !!args['skip-add-to-recently-opened'],
 				gotoLineMode: args.goto
 			});
@@ -211,64 +254,5 @@ export class LaunchMainService implements ILaunchMainService {
 		this.logService.trace('Received request for process ID from other instance.');
 
 		return process.pid;
-	}
-
-	async getMainProcessInfo(): Promise<IMainProcessInfo> {
-		this.logService.trace('Received request for main process info from other instance.');
-
-		const windows: IWindowInfo[] = [];
-		BrowserWindow.getAllWindows().forEach(window => {
-			const codeWindow = this.windowsMainService.getWindowById(window.id);
-			if (codeWindow) {
-				windows.push(this.codeWindowToInfo(codeWindow));
-			} else {
-				windows.push(this.browserWindowToInfo(window));
-			}
-		});
-
-		return {
-			mainPID: process.pid,
-			mainArguments: process.argv.slice(1),
-			windows,
-			screenReader: !!app.accessibilitySupportEnabled,
-			gpuFeatureStatus: app.getGPUFeatureStatus()
-		};
-	}
-
-	private getFolderURIs(window: ICodeWindow): URI[] {
-		const folderURIs: URI[] = [];
-
-		const workspace = window.openedWorkspace;
-		if (isSingleFolderWorkspaceIdentifier(workspace)) {
-			folderURIs.push(workspace.uri);
-		} else if (isWorkspaceIdentifier(workspace)) {
-			const resolvedWorkspace = this.workspacesManagementMainService.resolveLocalWorkspaceSync(workspace.configPath); // workspace folders can only be shown for local (resolved) workspaces
-			if (resolvedWorkspace) {
-				const rootFolders = resolvedWorkspace.folders;
-				rootFolders.forEach(root => {
-					folderURIs.push(root.uri);
-				});
-			} else {
-				//TODO@RMacfarlane: can we add the workspace file here?
-			}
-		}
-
-		return folderURIs;
-	}
-
-	private codeWindowToInfo(window: ICodeWindow): IWindowInfo {
-		const folderURIs = this.getFolderURIs(window);
-		const win = assertIsDefined(window.win);
-
-		return this.browserWindowToInfo(win, folderURIs, window.remoteAuthority);
-	}
-
-	private browserWindowToInfo(window: BrowserWindow, folderURIs: URI[] = [], remoteAuthority?: string): IWindowInfo {
-		return {
-			pid: window.webContents.getOSProcessId(),
-			title: window.getTitle(),
-			folderURIs,
-			remoteAuthority
-		};
 	}
 }

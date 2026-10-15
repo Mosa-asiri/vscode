@@ -3,11 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as nls from 'vs/nls';
-import { JSONSchemaType } from 'vs/base/common/jsonSchema';
-import { Color } from 'vs/base/common/color';
-import { isArray, isObject, isUndefinedOrNull, isString, isStringArray } from 'vs/base/common/types';
-import { IConfigurationPropertySchema } from 'vs/platform/configuration/common/configurationRegistry';
+import * as nls from '../../../../nls.js';
+import { JSONSchemaType } from '../../../../base/common/jsonSchema.js';
+import { Color } from '../../../../base/common/color.js';
+import { isObject, isUndefinedOrNull, isString, isStringArray } from '../../../../base/common/types.js';
+import { IConfigurationPropertySchema } from '../../../../platform/configuration/common/configurationRegistry.js';
 
 type Validator<T> = { enabled: boolean; isValid: (value: T) => boolean; message: string };
 
@@ -20,7 +20,7 @@ function isNullOrEmpty(value: unknown): boolean {
 }
 
 export function createValidator(prop: IConfigurationPropertySchema): (value: any) => (string | null) {
-	const type: (string | undefined)[] = isArray(prop.type) ? prop.type : [prop.type];
+	const type: (string | undefined)[] = Array.isArray(prop.type) ? prop.type : [prop.type];
 	const isNullable = canBeType(type, 'null');
 	const isNumeric = (canBeType(type, 'number') || canBeType(type, 'integer')) && (type.length === 1 || type.length === 2 && isNullable);
 
@@ -85,7 +85,7 @@ export function getInvalidTypeError(value: any, type: undefined | string | strin
 		return;
 	}
 
-	const typeArr = isArray(type) ? type : [type];
+	const typeArr = Array.isArray(type) ? type : [type];
 	if (!typeArr.some(_type => valueValidatesAsType(value, _type))) {
 		return nls.localize('invalidTypeError', "Setting has an invalid type, expected {0}. Fix in JSON.", JSON.stringify(type));
 	}
@@ -98,11 +98,11 @@ function valueValidatesAsType(value: any, type: string): boolean {
 	if (type === 'boolean') {
 		return valueType === 'boolean';
 	} else if (type === 'object') {
-		return value && !isArray(value) && valueType === 'object';
+		return value && !Array.isArray(value) && valueType === 'object';
 	} else if (type === 'null') {
 		return value === null;
 	} else if (type === 'array') {
-		return isArray(value);
+		return Array.isArray(value);
 	} else if (type === 'string') {
 		return valueType === 'string';
 	} else if (type === 'number' || type === 'integer') {
@@ -112,11 +112,30 @@ function valueValidatesAsType(value: any, type: string): boolean {
 	return true;
 }
 
+function toRegExp(pattern: string): RegExp {
+	try {
+		// The u flag allows support for better Unicode matching,
+		// but deprecates some patterns such as [\s-9]
+		// Ref https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Regular_expressions/Character_class#description
+		return new RegExp(pattern, 'u');
+	} catch (e) {
+		try {
+			return new RegExp(pattern);
+		} catch (e) {
+			// If the pattern can't be parsed even without the 'u' flag,
+			// just log the error to avoid rendering the entire Settings editor blank.
+			// Ref https://github.com/microsoft/vscode/issues/195054
+			console.error(nls.localize('regexParsingError', "Error parsing the following regex both with and without the u flag:"), pattern);
+			return /.*/;
+		}
+	}
+}
+
 function getStringValidators(prop: IConfigurationPropertySchema) {
 	const uriRegex = /^(([^:/?#]+?):)?(\/\/([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?/;
 	let patternRegex: RegExp | undefined;
 	if (typeof prop.pattern === 'string') {
-		patternRegex = new RegExp(prop.pattern);
+		patternRegex = toRegExp(prop.pattern);
 	}
 
 	return [
@@ -170,7 +189,7 @@ function getStringValidators(prop: IConfigurationPropertySchema) {
 }
 
 function getNumericValidators(prop: IConfigurationPropertySchema): Validator<number>[] {
-	const type: (string | undefined)[] = isArray(prop.type) ? prop.type : [prop.type];
+	const type: (string | undefined)[] = Array.isArray(prop.type) ? prop.type : [prop.type];
 
 	const isNullable = canBeType(type, 'null');
 	const isIntegral = (canBeType(type, 'integer')) && (type.length === 1 || type.length === 2 && isNullable);
@@ -229,9 +248,9 @@ function getNumericValidators(prop: IConfigurationPropertySchema): Validator<num
 }
 
 function getArrayValidator(prop: IConfigurationPropertySchema): ((value: any) => (string | null)) | null {
-	if (prop.type === 'array' && prop.items && !isArray(prop.items)) {
+	if (prop.type === 'array' && prop.items && !Array.isArray(prop.items)) {
 		const propItems = prop.items;
-		if (propItems && !isArray(propItems.type)) {
+		if (propItems && !Array.isArray(propItems.type)) {
 			const withQuotes = (s: string) => `'` + s + `'`;
 			return value => {
 				if (!value) {
@@ -240,7 +259,7 @@ function getArrayValidator(prop: IConfigurationPropertySchema): ((value: any) =>
 
 				let message = '';
 
-				if (!isArray(value)) {
+				if (!Array.isArray(value)) {
 					message += nls.localize('validations.arrayIncorrectType', 'Incorrect type. Expected an array.');
 					message += '\n';
 					return message;
@@ -272,7 +291,7 @@ function getArrayValidator(prop: IConfigurationPropertySchema): ((value: any) =>
 					}
 
 					if (typeof propItems.pattern === 'string') {
-						const patternRegex = new RegExp(propItems.pattern);
+						const patternRegex = toRegExp(propItems.pattern);
 						arrayValue.forEach(v => {
 							if (!patternRegex.test(v)) {
 								message +=
@@ -320,19 +339,32 @@ function getArrayValidator(prop: IConfigurationPropertySchema): ((value: any) =>
 
 function getObjectValidator(prop: IConfigurationPropertySchema): ((value: any) => (string | null)) | null {
 	if (prop.type === 'object') {
-		const { properties, patternProperties, additionalProperties } = prop;
+		const { properties, patternProperties, additionalProperties, propertyNames } = prop;
 		return value => {
 			if (!value) {
 				return null;
 			}
 
 			const errors: string[] = [];
+			let propertyNamesErrorShown = false;
 
 			if (!isObject(value)) {
 				errors.push(nls.localize('validations.objectIncorrectType', 'Incorrect type. Expected an object.'));
 			} else {
 				Object.keys(value).forEach((key: string) => {
 					const data = value[key];
+
+					// Validate propertyNames.pattern - show error message once
+					if (propertyNames?.pattern && !propertyNamesErrorShown) {
+						const patternRegex = toRegExp(propertyNames.pattern);
+						if (!patternRegex.test(key)) {
+							const errorMessage = propertyNames.patternErrorMessage ||
+								nls.localize('validations.propertyNamePattern', 'Property name must match pattern `{0}`.', propertyNames.pattern);
+							errors.push(errorMessage + '\n');
+							propertyNamesErrorShown = true;
+						}
+					}
+
 					if (properties && key in properties) {
 						const errorMessage = getErrorsForSchema(properties[key], data);
 						if (errorMessage) {
@@ -373,6 +405,18 @@ function getObjectValidator(prop: IConfigurationPropertySchema): ((value: any) =
 	}
 
 	return null;
+}
+
+/**
+ * Validates a single property name against the propertyNames.pattern schema.
+ * Returns true if the key is valid, false otherwise.
+ */
+export function validatePropertyName(propertyNames: IConfigurationPropertySchema['propertyNames'], key: string): boolean {
+	if (!propertyNames?.pattern) {
+		return true;
+	}
+	const patternRegex = toRegExp(propertyNames.pattern);
+	return patternRegex.test(key);
 }
 
 function getErrorsForSchema(propertySchema: IConfigurationPropertySchema, data: any): string | null {

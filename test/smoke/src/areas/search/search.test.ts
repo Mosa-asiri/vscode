@@ -15,8 +15,22 @@ export function setup(logger: Logger) {
 
 		after(function () {
 			const app = this.app as Application;
+
 			retry(async () => cp.execSync('git checkout . --quiet', { cwd: app.workspacePathOrFolder }), 0, 5);
 			retry(async () => cp.execSync('git reset --hard HEAD --quiet', { cwd: app.workspacePathOrFolder }), 0, 5);
+		});
+
+		it('verifies the sidebar moves to the right', async function () {
+			const app = this.app as Application;
+			await app.workbench.search.openSearchViewlet();
+
+			await app.code.dispatchKeybinding('PageUp', async () => {
+				await app.workbench.search.hasActivityBarMoved();
+			});
+
+			await app.code.dispatchKeybinding('PageUp', async () => {
+				await app.workbench.search.hasActivityBarMoved();
+			});
 		});
 
 		it('searches for body & checks for correct result number', async function () {
@@ -29,14 +43,16 @@ export function setup(logger: Logger) {
 
 		it('searches only for *.js files & checks for correct result number', async function () {
 			const app = this.app as Application;
-			await app.workbench.search.searchFor('body');
-			await app.workbench.search.showQueryDetails();
-			await app.workbench.search.setFilesToIncludeText('*.js');
-			await app.workbench.search.submitSearch();
+			try {
+				await app.workbench.search.setFilesToIncludeText('*.js');
+				await app.workbench.search.searchFor('body');
+				await app.workbench.search.showQueryDetails();
 
-			await app.workbench.search.waitForResultText('4 results in 1 file');
-			await app.workbench.search.setFilesToIncludeText('');
-			await app.workbench.search.hideQueryDetails();
+				await app.workbench.search.waitForResultText('4 results in 1 file');
+			} finally {
+				await app.workbench.search.setFilesToIncludeText('');
+				await app.workbench.search.hideQueryDetails();
+			}
 		});
 
 		it('dismisses result & checks for correct result number', async function () {

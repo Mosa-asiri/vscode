@@ -3,10 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as nls from 'vscode-nls';
-const localize = nls.loadMessageBundle();
-
-import { env, ExtensionContext, workspace, window, Disposable, commands, Uri, version as vscodeVersion, WorkspaceFolder } from 'vscode';
+import { env, ExtensionContext, workspace, window, Disposable, commands, Uri, version as vscodeVersion, WorkspaceFolder, LogOutputChannel, l10n, LogLevel, languages } from 'vscode';
 import { findGit, Git, IGit } from './git';
 import { Model } from './model';
 import { CommandCenter } from './commands';
@@ -15,7 +12,7 @@ import { GitDecorations } from './decorationProvider';
 import { Askpass } from './askpass';
 import { toDisposable, filterEvent, eventToPromise } from './util';
 import TelemetryReporter from '@vscode/extension-telemetry';
-import { GitExtension } from './api/git';
+import type { GitExtension } from './api/git';
 import { GitProtocolHandler } from './protocolHandler';
 import { GitExtensionImpl } from './api/extension';
 import * as path from 'path';
@@ -23,21 +20,25 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { GitTimelineProvider } from './timelineProvider';
 import { registerAPICommands } from './api/api1';
-import { TerminalEnvironmentManager } from './terminal';
-import { OutputChannelLogger } from './log';
+import { TerminalEnvironmentManager, TerminalShellExecutionManager } from './terminal';
 import { createIPCServer, IPCServer } from './ipc/ipcServer';
-import { GitEditor } from './gitEditor';
+import { GitEditor, GitEditorDocumentLinkProvider } from './gitEditor';
 import { GitPostCommitCommandsProvider } from './postCommitCommands';
+import { GitEditSessionIdentityProvider } from './editSessionIdentityProvider';
+import { GitCommitInputBoxCodeActionsProvider, GitCommitInputBoxDiagnosticsManager } from './diagnostics';
+import { GitBlameController } from './blame';
+import { CloneManager } from './cloneManager';
+import { getAskpassPaths } from './askpassManager';
 
-const deactivateTasks: { (): Promise<any> }[] = [];
+const deactivateTasks: { (): Promise<void> }[] = [];
 
-export async function deactivate(): Promise<any> {
+export async function deactivate(): Promise<void> {
 	for (const task of deactivateTasks) {
 		await task();
 	}
 }
 
-async function createModel(context: ExtensionContext, outputChannelLogger: OutputChannelLogger, telemetryReporter: TelemetryReporter, disposables: Disposable[]): Promise<Model> {
+async function createModel(context: ExtensionContext, logger: LogOutputChannel, telemetryReporter: TelemetryReporter, disposables: Disposable[]): Promise<{ model: Model; cloneManager: CloneManager }> {
 	const pathValue = workspace.getConfiguration('git').get<string | string[]>('path');
 	let pathHints = Array.isArray(pathValue) ? pathValue : pathValue ? [pathValue] : [];
 
@@ -50,7 +51,7 @@ async function createModel(context: ExtensionContext, outputChannelLogger: Outpu
 	}
 
 	const info = await findGit(pathHints, gitPath => {
-		outputChannelLogger.logInfo(localize('validating', "Validating found git in: {0}", gitPath));
+		logger.info(l10n.t('[main] Validating found git in: "{0}"', gitPath));
 		if (excludes.length === 0) {
 			return true;
 		}
@@ -58,20 +59,21 @@ async function createModel(context: ExtensionContext, outputChannelLogger: Outpu
 		const normalized = path.normalize(gitPath).replace(/[\r\n]+$/, '');
 		const skip = excludes.some(e => normalized.startsWith(e));
 		if (skip) {
-			outputChannelLogger.logInfo(localize('skipped', "Skipped found git in: {0}", gitPath));
+			logger.info(l10n.t('[main] Skipped found git in: "{0}"', gitPath));
 		}
 		return !skip;
-	});
+	}, logger);
 
 	let ipcServer: IPCServer | undefined = undefined;
 
 	try {
 		ipcServer = await createIPCServer(context.storagePath);
 	} catch (err) {
-		outputChannelLogger.logError(`Failed to create git IPC: ${err}`);
+		logger.error(`[main] Failed to create git IPC: ${err}`);
 	}
 
-	const askpass = new Askpass(ipcServer);
+	const askpassPaths = await getAskpassPaths(__dirname, context.globalStorageUri.fsPath, logger);
+	const askpass = new Askpass(ipcServer, logger, askpassPaths);
 	disposables.push(askpass);
 
 	const gitEditor = new GitEditor(ipcServer);
@@ -81,16 +83,17 @@ async function createModel(context: ExtensionContext, outputChannelLogger: Outpu
 	const terminalEnvironmentManager = new TerminalEnvironmentManager(context, [askpass, gitEditor, ipcServer]);
 	disposables.push(terminalEnvironmentManager);
 
-	outputChannelLogger.logInfo(localize('using git', "Using git {0} from {1}", info.version, info.path));
+	logger.info(l10n.t('[main] Using git "{0}" from "{1}"', info.version, info.path));
 
 	const git = new Git({
 		gitPath: info.path,
-		userAgent: `git/${info.version} (${(os as any).version?.() ?? os.type()} ${os.release()}; ${os.platform()} ${os.arch()}) vscode/${vscodeVersion} (${env.appName})`,
+		userAgent: `git/${info.version} (${os.version() ?? os.type()} ${os.release()}; ${os.platform()} ${os.arch()}) vscode/${vscodeVersion} (${env.appName})`,
 		version: info.version,
 		env: environment,
 	});
-	const model = new Model(git, askpass, context.globalState, outputChannelLogger, telemetryReporter);
+	const model = new Model(git, askpass, context.globalState, context.workspaceState, logger, telemetryReporter);
 	disposables.push(model);
+	const cloneManager = new CloneManager(model, telemetryReporter, model.repositoryCache);
 
 	const onRepository = () => commands.executeCommand('setContext', 'gitOpenRepositoryCount', `${model.repositories.length}`);
 	model.onDidOpenRepository(onRepository, null, disposables);
@@ -104,26 +107,38 @@ async function createModel(context: ExtensionContext, outputChannelLogger: Outpu
 			lines.pop();
 		}
 
-		outputChannelLogger.log(lines.join('\n'));
+		logger.appendLine(lines.join('\n'));
 	};
 	git.onOutput.addListener('log', onOutput);
 	disposables.push(toDisposable(() => git.onOutput.removeListener('log', onOutput)));
 
-	const cc = new CommandCenter(git, model, outputChannelLogger, telemetryReporter);
+	const cc = new CommandCenter(git, model, context.globalState, logger, telemetryReporter, cloneManager);
 	disposables.push(
 		cc,
-		new GitFileSystemProvider(model),
+		new GitFileSystemProvider(model, logger),
 		new GitDecorations(model),
-		new GitProtocolHandler(),
-		new GitTimelineProvider(model, cc)
+		new GitBlameController(model),
+		new GitTimelineProvider(model, cc),
+		new GitEditSessionIdentityProvider(model),
+		new TerminalShellExecutionManager(model, logger)
 	);
 
-	const postCommitCommandsProvider = new GitPostCommitCommandsProvider();
+	const postCommitCommandsProvider = new GitPostCommitCommandsProvider(model);
 	model.registerPostCommitCommandsProvider(postCommitCommandsProvider);
 
-	checkGitVersion(info);
+	const diagnosticsManager = new GitCommitInputBoxDiagnosticsManager(model);
+	disposables.push(diagnosticsManager);
 
-	return model;
+	const codeActionsProvider = new GitCommitInputBoxCodeActionsProvider(diagnosticsManager);
+	disposables.push(codeActionsProvider);
+
+	const gitEditorDocumentLinkProvider = languages.registerDocumentLinkProvider('git-commit', new GitEditorDocumentLinkProvider(model));
+	disposables.push(gitEditorDocumentLinkProvider);
+
+	checkGitVersion(info);
+	commands.executeCommand('setContext', 'gitVersion2.35', git.compareGitVersionTo('2.35') >= 0);
+
+	return { model, cloneManager };
 }
 
 async function isGitRepository(folder: WorkspaceFolder): Promise<boolean> {
@@ -159,10 +174,10 @@ async function warnAboutMissingGit(): Promise<void> {
 		return;
 	}
 
-	const download = localize('downloadgit', "Download Git");
-	const neverShowAgain = localize('neverShowAgain', "Don't Show Again");
+	const download = l10n.t('Download Git');
+	const neverShowAgain = l10n.t('Don\'t Show Again');
 	const choice = await window.showWarningMessage(
-		localize('notfound', "Git not found. Install it or configure it using the 'git.path' setting."),
+		l10n.t('Git not found. Install it or configure it using the "git.path" setting.'),
 		download,
 		neverShowAgain
 	);
@@ -178,11 +193,17 @@ export async function _activate(context: ExtensionContext): Promise<GitExtension
 	const disposables: Disposable[] = [];
 	context.subscriptions.push(new Disposable(() => Disposable.from(...disposables).dispose()));
 
-	const outputChannelLogger = new OutputChannelLogger();
-	disposables.push(outputChannelLogger);
+	const logger = window.createOutputChannel('Git', { log: true });
+	disposables.push(logger);
 
-	const { name, version, aiKey } = require('../package.json') as { name: string; version: string; aiKey: string };
-	const telemetryReporter = new TelemetryReporter(name, version, aiKey);
+	const onDidChangeLogLevel = (logLevel: LogLevel) => {
+		logger.appendLine(l10n.t('[main] Log level: {0}', LogLevel[logLevel]));
+	};
+	disposables.push(logger.onDidChangeLogLevel(onDidChangeLogLevel));
+	onDidChangeLogLevel(logger.logLevel);
+
+	const { aiKey } = require('../package.json') as { aiKey: string };
+	const telemetryReporter = new TelemetryReporter(aiKey);
 	deactivateTasks.push(() => telemetryReporter.dispose());
 
 	const config = workspace.getConfiguration('git', null);
@@ -193,20 +214,25 @@ export async function _activate(context: ExtensionContext): Promise<GitExtension
 		const onEnabled = filterEvent(onConfigChange, () => workspace.getConfiguration('git', null).get<boolean>('enabled') === true);
 		const result = new GitExtensionImpl();
 
-		eventToPromise(onEnabled).then(async () => result.model = await createModel(context, outputChannelLogger, telemetryReporter, disposables));
+		eventToPromise(onEnabled).then(async () => {
+			const { model, cloneManager } = await createModel(context, logger, telemetryReporter, disposables);
+			result.model = model;
+			result.cloneManager = cloneManager;
+		});
 		return result;
 	}
 
 	try {
-		const model = await createModel(context, outputChannelLogger, telemetryReporter, disposables);
-		return new GitExtensionImpl(model);
+		const { model, cloneManager } = await createModel(context, logger, telemetryReporter, disposables);
+
+		return new GitExtensionImpl({ model, cloneManager });
 	} catch (err) {
+		console.warn(err.message);
+		logger.warn(`[main] Failed to create model: ${err}`);
+
 		if (!/Git installation not found/.test(err.message || '')) {
 			throw err;
 		}
-
-		console.warn(err.message);
-		outputChannelLogger.logWarning(err.message);
 
 		/* __GDPR__
 			"git.missing" : {
@@ -219,6 +245,8 @@ export async function _activate(context: ExtensionContext): Promise<GitExtension
 		warnAboutMissingGit();
 
 		return new GitExtensionImpl();
+	} finally {
+		disposables.push(new GitProtocolHandler(logger));
 	}
 }
 
@@ -247,11 +275,11 @@ async function checkGitv1(info: IGit): Promise<void> {
 		return;
 	}
 
-	const update = localize('updateGit', "Update Git");
-	const neverShowAgain = localize('neverShowAgain', "Don't Show Again");
+	const update = l10n.t('Update Git');
+	const neverShowAgain = l10n.t('Don\'t Show Again');
 
 	const choice = await window.showWarningMessage(
-		localize('git20', "You seem to have git {0} installed. Code works best with git >= 2", info.version),
+		l10n.t('You seem to have git "{0}" installed. Code works best with git >= 2', info.version),
 		update,
 		neverShowAgain
 	);
@@ -275,10 +303,10 @@ async function checkGitWindows(info: IGit): Promise<void> {
 		return;
 	}
 
-	const update = localize('updateGit', "Update Git");
-	const neverShowAgain = localize('neverShowAgain', "Don't Show Again");
+	const update = l10n.t('Update Git');
+	const neverShowAgain = l10n.t('Don\'t Show Again');
 	const choice = await window.showWarningMessage(
-		localize('git2526', "There are known issues with the installed Git {0}. Please update to Git >= 2.27 for the git features to work correctly.", info.version),
+		l10n.t('There are known issues with the installed Git "{0}". Please update to Git >= 2.27 for the git features to work correctly.', info.version),
 		update,
 		neverShowAgain
 	);

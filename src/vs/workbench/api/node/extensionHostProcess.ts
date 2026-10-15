@@ -3,36 +3,52 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as nativeWatchdog from 'native-watchdog';
+import minimist from 'minimist';
+import * as nativeWatchdog from '@vscode/native-watchdog';
 import * as net from 'net';
-import * as minimist from 'minimist';
-import * as performance from 'vs/base/common/performance';
-import { isCancellationError, onUnexpectedError } from 'vs/base/common/errors';
-import { Event } from 'vs/base/common/event';
-import { IMessagePassingProtocol } from 'vs/base/parts/ipc/common/ipc';
-import { PersistentProtocol, ProtocolConstants, BufferedEmitter } from 'vs/base/parts/ipc/common/ipc.net';
-import { NodeSocket, WebSocketNodeSocket } from 'vs/base/parts/ipc/node/ipc.net';
-import product from 'vs/platform/product/common/product';
-import { MessageType, createMessageOfType, isMessageOfType, IExtHostSocketMessage, IExtHostReadyMessage, IExtHostReduceGraceTimeMessage, ExtensionHostExitCode, IExtensionHostInitData } from 'vs/workbench/services/extensions/common/extensionHostProtocol';
-import { ExtensionHostMain, IExitFn } from 'vs/workbench/api/common/extensionHostMain';
-import { VSBuffer } from 'vs/base/common/buffer';
-import { IURITransformer } from 'vs/base/common/uriIpc';
-import { Promises } from 'vs/base/node/pfs';
-import { realpath } from 'vs/base/node/extpath';
-import { IHostUtils } from 'vs/workbench/api/common/extHostExtensionService';
-import { ProcessTimeRunOnceScheduler } from 'vs/base/common/async';
-import { boolean } from 'vs/editor/common/config/editorOptions';
-import { createURITransformer } from 'vs/workbench/api/node/uriTransformer';
-import { MessagePortMain } from 'electron';
-import { ExtHostConnectionType, readExtHostConnection } from 'vs/workbench/services/extensions/common/extensionHostEnv';
-
-import 'vs/workbench/api/common/extHost.common.services';
-import 'vs/workbench/api/node/extHost.node.services';
+import { ProcessTimeRunOnceScheduler } from '../../../base/common/async.js';
+import { VSBuffer } from '../../../base/common/buffer.js';
+import { PendingMigrationError, isCancellationError, isSigPipeError, onUnexpectedError, onUnexpectedExternalError } from '../../../base/common/errors.js';
+import { Event } from '../../../base/common/event.js';
+import * as performance from '../../../base/common/performance.js';
+import { IURITransformer } from '../../../base/common/uriIpc.js';
+import { Promises } from '../../../base/node/pfs.js';
+import { IMessagePassingProtocol } from '../../../base/parts/ipc/common/ipc.js';
+import { BufferedEmitter, PersistentProtocol, ProtocolConstants } from '../../../base/parts/ipc/common/ipc.net.js';
+import { NodeSocket, WebSocketNodeSocket } from '../../../base/parts/ipc/node/ipc.net.js';
+import type { MessagePortMain, MessageEvent as UtilityMessageEvent } from '../../../base/parts/sandbox/node/electronTypes.js';
+import { boolean } from '../../../editor/common/config/editorOptions.js';
+import product from '../../../platform/product/common/product.js';
+import { ExtensionHostMain, IExitFn } from '../common/extensionHostMain.js';
+import { IHostUtils } from '../common/extHostExtensionService.js';
+import { createURITransformer } from '../../../base/common/uriTransformer.js';
+import { ExtHostConnectionType, readExtHostConnection } from '../../services/extensions/common/extensionHostEnv.js';
+import { ExtensionHostExitCode, IExtHostReadyMessage, IExtHostReduceGraceTimeMessage, IExtHostSocketMessage, IExtensionHostInitData, MessageType, createMessageOfType, isMessageOfType } from '../../services/extensions/common/extensionHostProtocol.js';
+import { IDisposable } from '../../../base/common/lifecycle.js';
+import '../common/extHost.common.services.js';
+import './extHost.node.services.js';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
 
 interface ParsedExtHostArgs {
 	transformURIs?: boolean;
 	skipWorkspaceStorageLock?: boolean;
+	supportGlobalNavigator?: boolean; // enable global navigator object in nodejs
 	useHostProxy?: 'true' | 'false'; // use a string, as undefined is also a valid value
+}
+
+// silence experimental warnings when in development
+if (process.env.VSCODE_DEV) {
+	const warningListeners = process.listeners('warning');
+	process.removeAllListeners('warning');
+	process.on('warning', (warning: any) => {
+		if (warning.code === 'ExperimentalWarning' || warning.name === 'ExperimentalWarning' || warning.name === 'DeprecationWarning') {
+			console.debug(warning);
+			return;
+		}
+
+		warningListeners[0](warning);
+	});
 }
 
 // workaround for https://github.com/microsoft/vscode/issues/85490
@@ -49,7 +65,8 @@ interface ParsedExtHostArgs {
 const args = minimist(process.argv.slice(2), {
 	boolean: [
 		'transformURIs',
-		'skipWorkspaceStorageLock'
+		'skipWorkspaceStorageLock',
+		'supportGlobalNavigator',
 	],
 	string: [
 		'useHostProxy' // 'true' | 'false' | undefined
@@ -62,7 +79,7 @@ const args = minimist(process.argv.slice(2), {
 // happening we essentially blocklist this module from getting loaded in any
 // extension by patching the node require() function.
 (function () {
-	const Module = require.__$__nodeRequire('module') as any;
+	const Module = require('module');
 	const originalLoad = Module._load;
 
 	Module._load = function (request: string) {
@@ -76,6 +93,7 @@ const args = minimist(process.argv.slice(2), {
 
 // custom process.exit logic...
 const nativeExit: IExitFn = process.exit.bind(process);
+const nativeOn = process.on.bind(process);
 function patchProcess(allowExit: boolean) {
 	process.exit = function (code?: number) {
 		if (allowExit) {
@@ -87,7 +105,8 @@ function patchProcess(allowExit: boolean) {
 	} as (code?: number) => never;
 
 	// override Electron's process.crash() method
-	process.crash = function () {
+	// eslint-disable-next-line local/code-no-any-casts
+	(process as any /* bypass layer checker */).crash = function () {
 		const err = new Error('An extension called process.crash() and this was prevented.');
 		console.warn(err.stack);
 	};
@@ -97,7 +116,38 @@ function patchProcess(allowExit: boolean) {
 	// on the desktop.
 	// Refs https://github.com/microsoft/vscode/issues/151012#issuecomment-1156593228
 	process.env['ELECTRON_RUN_AS_NODE'] = '1';
+
+	// eslint-disable-next-line local/code-no-any-casts
+	process.on = <any>function (event: string, listener: (...args: unknown[]) => void) {
+		if (event === 'uncaughtException') {
+			const actualListener = listener;
+			listener = function (...args: unknown[]) {
+				try {
+					return actualListener.apply(undefined, args);
+				} catch {
+					// DO NOT HANDLE NOR PRINT the error here because this can and will lead to
+					// more errors which will cause error handling to be reentrant and eventually
+					// overflowing the stack. Do not be sad, we do handle and annotate uncaught
+					// errors properly in 'extensionHostMain'
+				}
+			};
+		}
+		nativeOn(event, listener);
+	};
+
 }
+
+// NodeJS since v21 defines navigator as a global object. This will likely surprise many extensions and potentially break them
+// because `navigator` has historically often been used to check if running in a browser (vs running inside NodeJS)
+if (!args.supportGlobalNavigator) {
+	Object.defineProperty(globalThis, 'navigator', {
+		get: () => {
+			onUnexpectedExternalError(new PendingMigrationError('navigator is now a global in nodejs, please see https://aka.ms/vscode-extensions/navigator for additional info on this error.'));
+			return undefined;
+		}
+	});
+}
+
 
 interface IRendererConnection {
 	protocol: IMessagePassingProtocol;
@@ -110,6 +160,23 @@ let onTerminate = function (reason: string) {
 	nativeExit();
 };
 
+function readReconnectionValue(envKey: string, fallback: number): number {
+	const raw = process.env[envKey];
+	if (typeof raw !== 'string' || raw.trim().length === 0) {
+		console.log(`[reconnection-grace-time] Extension host: env var ${envKey} not set, using default: ${fallback}ms (${Math.floor(fallback / 1000)}s)`);
+		return fallback;
+	}
+	const parsed = Number(raw);
+	if (!isFinite(parsed) || parsed < 0) {
+		console.log(`[reconnection-grace-time] Extension host: env var ${envKey} invalid value '${raw}', using default: ${fallback}ms (${Math.floor(fallback / 1000)}s)`);
+		return fallback;
+	}
+	const millis = Math.floor(parsed);
+	const result = millis > Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : millis;
+	console.log(`[reconnection-grace-time] Extension host: read ${envKey}=${raw}ms (${Math.floor(result / 1000)}s)`);
+	return result;
+}
+
 function _createExtHostProtocol(): Promise<IMessagePassingProtocol> {
 	const extHostConnection = readExtHostConnection(process.env);
 
@@ -120,7 +187,7 @@ function _createExtHostProtocol(): Promise<IMessagePassingProtocol> {
 			const withPorts = (ports: MessagePortMain[]) => {
 				const port = ports[0];
 				const onMessage = new BufferedEmitter<VSBuffer>();
-				port.on('message', (e) => onMessage.fire(VSBuffer.wrap(e.data)));
+				port.on('message', (e) => onMessage.fire(VSBuffer.wrap(e.data as Uint8Array)));
 				port.on('close', () => {
 					onTerminate('renderer closed the MessagePort');
 				});
@@ -132,14 +199,7 @@ function _createExtHostProtocol(): Promise<IMessagePassingProtocol> {
 				});
 			};
 
-			if ((<any>global).vscodePorts) {
-				const ports = (<any>global).vscodePorts;
-				delete (<any>global).vscodePorts;
-				withPorts(ports);
-			} else {
-				(<any>global).vscodePortsCallback = withPorts;
-			}
-
+			(process as unknown as { parentPort: { on: (event: 'message', listener: (messageEvent: UtilityMessageEvent) => void) => void } }).parentPort.on('message', (e: UtilityMessageEvent) => withPorts(e.ports));
 		});
 
 	} else if (extHostConnection.type === ExtHostConnectionType.Socket) {
@@ -152,8 +212,8 @@ function _createExtHostProtocol(): Promise<IMessagePassingProtocol> {
 				onTerminate('VSCODE_EXTHOST_IPC_SOCKET timeout');
 			}, 60000);
 
-			const reconnectionGraceTime = ProtocolConstants.ReconnectionGraceTime;
-			const reconnectionShortGraceTime = ProtocolConstants.ReconnectionShortGraceTime;
+			const reconnectionGraceTime = readReconnectionValue('VSCODE_RECONNECTION_GRACE_TIME', ProtocolConstants.ReconnectionGraceTime);
+			const reconnectionShortGraceTime = reconnectionGraceTime > 0 ? Math.min(ProtocolConstants.ReconnectionShortGraceTime, reconnectionGraceTime) : 0;
 			const disconnectRunner1 = new ProcessTimeRunOnceScheduler(() => onTerminate('renderer disconnected for too long (1)'), reconnectionGraceTime);
 			const disconnectRunner2 = new ProcessTimeRunOnceScheduler(() => onTerminate('renderer disconnected for too long (2)'), reconnectionShortGraceTime);
 
@@ -180,9 +240,9 @@ function _createExtHostProtocol(): Promise<IMessagePassingProtocol> {
 						protocol.sendResume();
 					} else {
 						clearTimeout(timer);
-						protocol = new PersistentProtocol(socket, initialDataChunk);
+						protocol = new PersistentProtocol({ socket, initialChunk: initialDataChunk });
 						protocol.sendResume();
-						protocol.onDidDispose(() => onTerminate('renderer disconnected'));
+						Event.once(protocol.onDidDispose)(() => onTerminate('renderer disconnected'));
 						resolve(protocol);
 
 						// Wait for rich client to reconnect
@@ -217,7 +277,7 @@ function _createExtHostProtocol(): Promise<IMessagePassingProtocol> {
 
 			const socket = net.createConnection(pipeName, () => {
 				socket.removeListener('error', reject);
-				const protocol = new PersistentProtocol(new NodeSocket(socket, 'extHost-renderer'));
+				const protocol = new PersistentProtocol({ socket: new NodeSocket(socket, 'extHost-renderer') });
 				protocol.sendResume();
 				resolve(protocol);
 			});
@@ -240,12 +300,14 @@ async function createExtHostProtocol(): Promise<IMessagePassingProtocol> {
 		readonly onMessage: Event<VSBuffer> = this._onMessage.event;
 
 		private _terminating: boolean;
+		private _protocolListener: IDisposable;
 
 		constructor() {
 			this._terminating = false;
-			protocol.onMessage((msg) => {
+			this._protocolListener = protocol.onMessage((msg) => {
 				if (isMessageOfType(msg, MessageType.Terminate)) {
 					this._terminating = true;
+					this._protocolListener.dispose();
 					onTerminate('received terminate message from renderer');
 				} else {
 					this._onMessage.fire(msg);
@@ -286,37 +348,39 @@ function connectToRenderer(protocol: IMessagePassingProtocol): Promise<IRenderer
 				}
 			}
 
-			// Kill oneself if one's parent dies. Much drama.
-			let epermErrors = 0;
-			setInterval(function () {
-				try {
-					process.kill(initData.parentPid, 0); // throws an exception if the main process doesn't exist anymore.
-					epermErrors = 0;
-				} catch (e) {
-					if (e && e.code === 'EPERM') {
-						// Even if the parent process is still alive,
-						// some antivirus software can lead to an EPERM error to be thrown here.
-						// Let's terminate only if we get 3 consecutive EPERM errors.
-						epermErrors++;
-						if (epermErrors >= 3) {
-							onTerminate(`parent process ${initData.parentPid} does not exist anymore (3 x EPERM): ${e.message} (code: ${e.code}) (errno: ${e.errno})`);
+			if (initData.parentPid) {
+				// Kill oneself if one's parent dies. Much drama.
+				let epermErrors = 0;
+				setInterval(function () {
+					try {
+						process.kill(initData.parentPid, 0); // throws an exception if the main process doesn't exist anymore.
+						epermErrors = 0;
+					} catch (e) {
+						if (e && e.code === 'EPERM') {
+							// Even if the parent process is still alive,
+							// some antivirus software can lead to an EPERM error to be thrown here.
+							// Let's terminate only if we get 3 consecutive EPERM errors.
+							epermErrors++;
+							if (epermErrors >= 3) {
+								onTerminate(`parent process ${initData.parentPid} does not exist anymore (3 x EPERM): ${e.message} (code: ${e.code}) (errno: ${e.errno})`);
+							}
+						} else {
+							onTerminate(`parent process ${initData.parentPid} does not exist anymore: ${e.message} (code: ${e.code}) (errno: ${e.errno})`);
 						}
-					} else {
-						onTerminate(`parent process ${initData.parentPid} does not exist anymore: ${e.message} (code: ${e.code}) (errno: ${e.errno})`);
 					}
-				}
-			}, 1000);
+				}, 1000);
 
-			// In certain cases, the event loop can become busy and never yield
-			// e.g. while-true or process.nextTick endless loops
-			// So also use the native node module to do it from a separate thread
-			let watchdog: typeof nativeWatchdog;
-			try {
-				watchdog = require.__$__nodeRequire('native-watchdog');
-				watchdog.start(initData.parentPid);
-			} catch (err) {
-				// no problem...
-				onUnexpectedError(err);
+				// In certain cases, the event loop can become busy and never yield
+				// e.g. while-true or process.nextTick endless loops
+				// So also use the native node module to do it from a separate thread
+				let watchdog: typeof nativeWatchdog;
+				try {
+					watchdog = require('@vscode/native-watchdog');
+					watchdog.start(initData.parentPid);
+				} catch (err) {
+					// no problem...
+					onUnexpectedError(err);
+				}
 			}
 
 			// Tell the outside that we are initialized
@@ -330,7 +394,7 @@ function connectToRenderer(protocol: IMessagePassingProtocol): Promise<IRenderer
 	});
 }
 
-export async function startExtensionHostProcess(): Promise<void> {
+async function startExtensionHostProcess(): Promise<void> {
 
 	// Print a console message when rejection isn't handled within N seconds. For details:
 	// see https://nodejs.org/api/process.html#process_event_unhandledrejection
@@ -366,7 +430,9 @@ export async function startExtensionHostProcess(): Promise<void> {
 
 	// Print a console message when an exception isn't handled.
 	process.on('uncaughtException', function (err: Error) {
-		onUnexpectedError(err);
+		if (!isSigPipeError(err)) {
+			onUnexpectedError(err);
+		}
 	});
 
 	performance.mark(`code/extHost/willConnectToRenderer`);
@@ -385,8 +451,8 @@ export async function startExtensionHostProcess(): Promise<void> {
 		declare readonly _serviceBrand: undefined;
 		public readonly pid = process.pid;
 		exit(code: number) { nativeExit(code); }
-		exists(path: string) { return Promises.exists(path); }
-		realpath(path: string) { return realpath(path); }
+		fsExists(path: string) { return Promises.exists(path); }
+		fsRealpath(path: string) { return Promises.realpath(path); }
 	};
 
 	// Attempt to load uri transformer

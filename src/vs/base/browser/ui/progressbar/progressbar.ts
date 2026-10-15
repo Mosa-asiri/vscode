@@ -3,29 +3,31 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { hide, show } from 'vs/base/browser/dom';
-import { RunOnceScheduler } from 'vs/base/common/async';
-import { Color } from 'vs/base/common/color';
-import { Disposable } from 'vs/base/common/lifecycle';
-import { mixin } from 'vs/base/common/objects';
-import { isNumber } from 'vs/base/common/types';
-import 'vs/css!./progressbar';
+import { hide, show } from '../../dom.js';
+import { getProgressAccessibilitySignalScheduler } from './progressAccessibilitySignal.js';
+import { RunOnceScheduler } from '../../../common/async.js';
+import { Disposable, IDisposable, MutableDisposable } from '../../../common/lifecycle.js';
+import { isNumber } from '../../../common/types.js';
+import { localize } from '../../../../nls.js';
+import './progressbar.css';
 
 const CSS_DONE = 'done';
 const CSS_ACTIVE = 'active';
 const CSS_INFINITE = 'infinite';
 const CSS_INFINITE_LONG_RUNNING = 'infinite-long-running';
 const CSS_DISCRETE = 'discrete';
+const NLS_PROGRESS_LABEL = localize('progress', "Progress");
 
 export interface IProgressBarOptions extends IProgressBarStyles {
+	ariaLabel?: string;
 }
 
 export interface IProgressBarStyles {
-	progressBarBackground?: Color;
+	progressBarBackground: string | undefined;
 }
 
-const defaultOpts = {
-	progressBarBackground: Color.fromHex('#0E70C0')
+export const unthemedProgressBarOptions: IProgressBarOptions = {
+	progressBarBackground: undefined
 };
 
 /**
@@ -43,43 +45,39 @@ export class ProgressBar extends Disposable {
 	 */
 	private static readonly LONG_RUNNING_INFINITE_THRESHOLD = 10000;
 
-	private options: IProgressBarOptions;
+	private static readonly PROGRESS_SIGNAL_DEFAULT_DELAY = 3000;
+
 	private workedVal: number;
 	private element!: HTMLElement;
 	private bit!: HTMLElement;
 	private totalWork: number | undefined;
-	private progressBarBackground: Color | undefined;
 	private showDelayedScheduler: RunOnceScheduler;
 	private longRunningScheduler: RunOnceScheduler;
+	private readonly progressSignal = this._register(new MutableDisposable<IDisposable>());
 
 	constructor(container: HTMLElement, options?: IProgressBarOptions) {
 		super();
 
-		this.options = options || Object.create(null);
-		mixin(this.options, defaultOpts, false);
-
 		this.workedVal = 0;
-
-		this.progressBarBackground = this.options.progressBarBackground;
 
 		this.showDelayedScheduler = this._register(new RunOnceScheduler(() => show(this.element), 0));
 		this.longRunningScheduler = this._register(new RunOnceScheduler(() => this.infiniteLongRunning(), ProgressBar.LONG_RUNNING_INFINITE_THRESHOLD));
 
-		this.create(container);
+		this.create(container, options);
 	}
 
-	private create(container: HTMLElement): void {
+	private create(container: HTMLElement, options?: IProgressBarOptions): void {
 		this.element = document.createElement('div');
 		this.element.classList.add('monaco-progress-container');
 		this.element.setAttribute('role', 'progressbar');
 		this.element.setAttribute('aria-valuemin', '0');
+		this.element.setAttribute('aria-label', options?.ariaLabel && options.ariaLabel.trim() ? options.ariaLabel : NLS_PROGRESS_LABEL);
 		container.appendChild(this.element);
 
 		this.bit = document.createElement('div');
 		this.bit.classList.add('progress-bit');
+		this.bit.style.backgroundColor = options?.progressBarBackground || '#0E70C0';
 		this.element.appendChild(this.bit);
-
-		this.applyStyles();
 	}
 
 	private off(): void {
@@ -91,6 +89,7 @@ export class ProgressBar extends Disposable {
 		this.totalWork = undefined;
 
 		this.longRunningScheduler.cancel();
+		this.progressSignal.clear();
 	}
 
 	/**
@@ -182,7 +181,7 @@ export class ProgressBar extends Disposable {
 	}
 
 	/**
-	 * Tells the progress bar the total amount of work that has been completed.
+	 * Tells the progress bar the total amount of work (0 to 100) that has been completed.
 	 */
 	setWorked(value: number): ProgressBar {
 		value = Math.max(1, Number(value));
@@ -211,6 +210,7 @@ export class ProgressBar extends Disposable {
 
 	show(delay?: number): void {
 		this.showDelayedScheduler.cancel();
+		this.progressSignal.value = getProgressAccessibilitySignalScheduler(ProgressBar.PROGRESS_SIGNAL_DEFAULT_DELAY);
 
 		if (typeof delay === 'number') {
 			this.showDelayedScheduler.schedule(delay);
@@ -221,20 +221,8 @@ export class ProgressBar extends Disposable {
 
 	hide(): void {
 		hide(this.element);
+
 		this.showDelayedScheduler.cancel();
-	}
-
-	style(styles: IProgressBarStyles): void {
-		this.progressBarBackground = styles.progressBarBackground;
-
-		this.applyStyles();
-	}
-
-	protected applyStyles(): void {
-		if (this.bit) {
-			const background = this.progressBarBackground ? this.progressBarBackground.toString() : '';
-
-			this.bit.style.backgroundColor = background;
-		}
+		this.progressSignal.clear();
 	}
 }

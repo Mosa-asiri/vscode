@@ -3,23 +3,18 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { isArray, isTypedArray, isObject, isUndefinedOrNull } from 'vs/base/common/types';
+import { isTypedArray, isObject, isUndefinedOrNull } from './types.js';
 
 export function deepClone<T>(obj: T): T {
 	if (!obj || typeof obj !== 'object') {
 		return obj;
 	}
 	if (obj instanceof RegExp) {
-		// See https://github.com/microsoft/TypeScript/issues/10990
-		return obj as any;
+		return obj;
 	}
 	const result: any = Array.isArray(obj) ? [] : {};
-	Object.keys(<any>obj).forEach((key: string) => {
-		if ((<any>obj)[key] && typeof (<any>obj)[key] === 'object') {
-			result[key] = deepClone((<any>obj)[key]);
-		} else {
-			result[key] = (<any>obj)[key];
-		}
+	Object.entries(obj).forEach(([key, value]) => {
+		result[key] = value && typeof value === 'object' ? deepClone(value) : value;
 	});
 	return result;
 }
@@ -61,7 +56,7 @@ function _cloneAndChange(obj: any, changer: (orig: any) => any, seen: Set<any>):
 		return changed;
 	}
 
-	if (isArray(obj)) {
+	if (Array.isArray(obj)) {
 		const r1: any[] = [];
 		for (const e of obj) {
 			r1.push(_cloneAndChange(e, changer, seen));
@@ -74,10 +69,10 @@ function _cloneAndChange(obj: any, changer: (orig: any) => any, seen: Set<any>):
 			throw new Error('Cannot clone recursive data-structure');
 		}
 		seen.add(obj);
-		const r2 = {};
+		const r2: Record<string, unknown> = {};
 		for (const i2 in obj) {
 			if (_hasOwnProperty.call(obj, i2)) {
-				(r2 as any)[i2] = _cloneAndChange(obj[i2], changer, seen);
+				r2[i2] = _cloneAndChange(obj[i2], changer, seen);
 			}
 		}
 		seen.delete(obj);
@@ -182,6 +177,9 @@ export function safeStringify(obj: any): string {
 				seen.add(value);
 			}
 		}
+		if (typeof value === 'bigint') {
+			return `[BigInt ${value.toString()}]`;
+		}
 		return value;
 	});
 }
@@ -217,7 +215,7 @@ export function distinct(base: obj, target: obj): obj {
 	return result;
 }
 
-export function getCaseInsensitive(target: obj, key: string): any {
+export function getCaseInsensitive(target: obj, key: string): unknown {
 	const lowercaseKey = key.toLowerCase();
 	const equivalentKey = Object.keys(target).find(k => k.toLowerCase() === lowercaseKey);
 	return equivalentKey ? target[equivalentKey] : target[key];
@@ -231,4 +229,12 @@ export function filter(obj: obj, predicate: (key: string, value: any) => boolean
 		}
 	}
 	return result;
+}
+
+export function mapValues<T extends {}, R>(obj: T, fn: (value: T[keyof T], key: string) => R): { [K in keyof T]: R } {
+	const result: { [key: string]: R } = {};
+	for (const [key, value] of Object.entries(obj)) {
+		result[key] = fn(<T[keyof T]>value, key);
+	}
+	return result as { [K in keyof T]: R };
 }

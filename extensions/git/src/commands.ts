@@ -5,109 +5,284 @@
 
 import * as os from 'os';
 import * as path from 'path';
-import { Command, commands, Disposable, LineChange, MessageOptions, Position, ProgressLocation, QuickPickItem, Range, SourceControlResourceState, TextDocumentShowOptions, TextEditor, Uri, ViewColumn, window, workspace, WorkspaceEdit, WorkspaceFolder, TimelineItem, env, Selection, TextDocumentContentProvider, InputBoxValidationSeverity, TabInputText, TabInputTextMerge } from 'vscode';
+import { Command, commands, Disposable, MessageOptions, Position, QuickPickItem, Range, SourceControlResourceState, TextDocumentShowOptions, TextEditor, Uri, ViewColumn, window, workspace, WorkspaceEdit, WorkspaceFolder, TimelineItem, env, Selection, TextDocumentContentProvider, InputBoxValidationSeverity, TabInputText, TabInputTextMerge, QuickPickItemKind, TextDocument, LogOutputChannel, l10n, Memento, UIKind, QuickInputButton, ThemeIcon, SourceControlHistoryItem, SourceControl, InputBoxValidationMessage, Tab, TabInputNotebook, QuickInputButtonLocation, languages, SourceControlArtifact, ProgressLocation } from 'vscode';
 import TelemetryReporter from '@vscode/extension-telemetry';
-import * as nls from 'vscode-nls';
-import { uniqueNamesGenerator, adjectives, animals, colors, NumberDictionary } from '@joaomoreno/unique-names-generator';
-import { Branch, ForcePushMode, GitErrorCodes, Ref, RefType, Status, CommitOptions, RemoteSourcePublisher } from './api/git';
-import { Git, Stash } from './git';
+import type { CommitOptions, RemoteSourcePublisher, Remote, Branch, Ref } from './api/git';
+import { ForcePushMode, GitErrorCodes, RefType, Status } from './api/git.constants';
+import { Git, GitError, Repository as GitRepository, Stash, Worktree } from './git';
 import { Model } from './model';
-import { Repository, Resource, ResourceGroupType } from './repository';
-import { applyLineChanges, getModifiedRange, intersectDiffWithRange, invertLineChange, toLineRanges } from './staging';
-import { fromGitUri, toGitUri, isGitUri, toMergeUris } from './uri';
-import { grep, isDescendant, pathEquals, relativePath } from './util';
-import { LogLevel, OutputChannelLogger } from './log';
+import { GitResourceGroup, Repository, Resource, ResourceGroupType } from './repository';
+import { DiffEditorSelectionHunkToolbarContext, LineChange, applyLineChanges, getIndexDiffInformation, getModifiedRange, getWorkingTreeDiffInformation, intersectDiffWithRange, invertLineChange, toLineChanges, toLineRanges, compareLineChanges } from './staging';
+import { fromGitUri, toGitUri, isGitUri, toMergeUris, toMultiFileDiffEditorUris } from './uri';
+import { coalesce, DiagnosticSeverityConfig, dispose, fromNow, getHistoryItemDisplayName, getStashDescription, grep, isDefined, isDescendant, isLinuxSnap, isRemote, isWindows, pathEquals, relativePath, subject, toDiagnosticSeverity, truncate } from './util';
 import { GitTimelineItem } from './timelineProvider';
 import { ApiRepository } from './api/api1';
-import { pickRemoteSource } from './remoteSource';
+import { getRemoteSourceActions, pickRemoteSource } from './remoteSource';
+import { RemoteSourceAction } from './typings/git-base';
+import { CloneManager } from './cloneManager';
 
-const localize = nls.loadMessageBundle();
+abstract class CheckoutCommandItem implements QuickPickItem {
+	abstract get label(): string;
+	get description(): string { return ''; }
+	get alwaysShow(): boolean { return true; }
+}
 
-class CheckoutItem implements QuickPickItem {
+class CreateBranchItem extends CheckoutCommandItem {
+	get label(): string { return l10n.t('{0} Create new branch...', '$(plus)'); }
+}
 
-	protected get shortCommit(): string { return (this.ref.commit || '').substr(0, 8); }
-	get label(): string { return `${this.repository.isBranchProtected(this.ref.name ?? '') ? '$(lock)' : '$(git-branch)'} ${this.ref.name || this.shortCommit}`; }
-	get description(): string { return this.shortCommit; }
-	get refName(): string | undefined { return this.ref.name; }
+class CreateBranchFromItem extends CheckoutCommandItem {
+	get label(): string { return l10n.t('{0} Create new branch from...', '$(plus)'); }
+}
 
-	constructor(protected repository: Repository, protected ref: Ref) { }
+class CheckoutDetachedItem extends CheckoutCommandItem {
+	get label(): string { return l10n.t('{0} Checkout detached...', '$(debug-disconnect)'); }
+}
 
-	async run(opts?: { detached?: boolean }): Promise<void> {
-		const ref = this.ref.name;
+class RefItemSeparator implements QuickPickItem {
+	get kind(): QuickPickItemKind { return QuickPickItemKind.Separator; }
 
-		if (!ref) {
-			return;
+	get label(): string {
+		switch (this.refType) {
+			case RefType.Head:
+				return l10n.t('branches');
+			case RefType.RemoteHead:
+				return l10n.t('remote branches');
+			case RefType.Tag:
+				return l10n.t('tags');
+			default:
+				return '';
+		}
+	}
+
+	constructor(private readonly refType: RefType) { }
+}
+
+class RefItem implements QuickPickItem {
+
+	get label(): string {
+		switch (this.ref.type) {
+			case RefType.Head:
+				return `$(git-branch) ${this.ref.name ?? this.shortCommit}`;
+			case RefType.RemoteHead:
+				return `$(cloud) ${this.ref.name ?? this.shortCommit}`;
+			case RefType.Tag:
+				return `$(tag) ${this.ref.name ?? this.shortCommit}`;
+			default:
+				return '';
+		}
+	}
+
+	get description(): string {
+		if (this.ref.commitDetails?.commitDate) {
+			return fromNow(this.ref.commitDetails.commitDate, true, true);
 		}
 
-		await this.repository.checkout(ref, opts);
+		switch (this.ref.type) {
+			case RefType.Head:
+				return this.shortCommit;
+			case RefType.RemoteHead:
+				return l10n.t('Remote branch at {0}', this.shortCommit);
+			case RefType.Tag:
+				return l10n.t('Tag at {0}', this.shortCommit);
+			default:
+				return '';
+		}
+	}
+
+	get detail(): string | undefined {
+		if (this.ref.commitDetails?.authorName && this.ref.commitDetails?.message) {
+			return `${this.ref.commitDetails.authorName}$(circle-small-filled)${this.shortCommit}$(circle-small-filled)${this.ref.commitDetails.message}`;
+		}
+
+		return undefined;
+	}
+
+	get refId(): string {
+		switch (this.ref.type) {
+			case RefType.Head:
+				return `refs/heads/${this.ref.name}`;
+			case RefType.RemoteHead:
+				return `refs/remotes/${this.ref.name}`;
+			case RefType.Tag:
+				return `refs/tags/${this.ref.name}`;
+			default:
+				throw new Error('Unknown ref type');
+		}
+	}
+	get refName(): string | undefined { return this.ref.name; }
+	get refRemote(): string | undefined { return this.ref.remote; }
+	get shortCommit(): string { return (this.ref.commit || '').substring(0, this.shortCommitLength); }
+	get commitMessage(): string | undefined { return this.ref.commitDetails?.message; }
+
+	private _buttons?: QuickInputButton[];
+	get buttons(): QuickInputButton[] | undefined { return this._buttons; }
+	set buttons(newButtons: QuickInputButton[] | undefined) { this._buttons = newButtons; }
+
+	constructor(protected readonly ref: Ref, private readonly shortCommitLength: number) { }
+}
+
+class BranchItem extends RefItem {
+	override get description(): string {
+		const description: string[] = [];
+
+		if (typeof this.ref.behind === 'number' && typeof this.ref.ahead === 'number') {
+			description.push(`${this.ref.behind}↓ ${this.ref.ahead}↑`);
+		}
+		if (this.ref.commitDetails?.commitDate) {
+			description.push(fromNow(this.ref.commitDetails.commitDate, true, true));
+		}
+
+		return description.length > 0 ? description.join('$(circle-small-filled)') : this.shortCommit;
+	}
+
+	constructor(override readonly ref: Branch, shortCommitLength: number) {
+		super(ref, shortCommitLength);
 	}
 }
 
-class CheckoutTagItem extends CheckoutItem {
-
-	override get label(): string { return `$(tag) ${this.ref.name || this.shortCommit}`; }
-	override get description(): string {
-		return localize('tag at', "Tag at {0}", this.shortCommit);
-	}
-}
-
-class CheckoutRemoteHeadItem extends CheckoutItem {
-
-	override get label(): string { return `$(cloud) ${this.ref.name || this.shortCommit}`; }
-	override get description(): string {
-		return localize('remote branch at', "Remote branch at {0}", this.shortCommit);
-	}
-
-	override async run(opts?: { detached?: boolean }): Promise<void> {
+class CheckoutItem extends BranchItem {
+	async run(repository: Repository, opts?: { detached?: boolean }): Promise<void> {
 		if (!this.ref.name) {
 			return;
 		}
 
-		const branches = await this.repository.findTrackingBranches(this.ref.name);
+		const config = workspace.getConfiguration('git', Uri.file(repository.root));
+		const pullBeforeCheckout = config.get<boolean>('pullBeforeCheckout', false) === true;
 
-		if (branches.length > 0) {
-			await this.repository.checkout(branches[0].name!, opts);
-		} else {
-			await this.repository.checkoutTracking(this.ref.name, opts);
-		}
+		const treeish = opts?.detached ? this.ref.commit ?? this.ref.name : this.ref.name;
+		await repository.checkout(treeish, { ...opts, pullBeforeCheckout });
 	}
 }
 
-class BranchDeleteItem implements QuickPickItem {
+class CheckoutProtectedItem extends CheckoutItem {
 
-	private get shortCommit(): string { return (this.ref.commit || '').substr(0, 8); }
-	get branchName(): string | undefined { return this.ref.name; }
-	get label(): string { return this.branchName || ''; }
-	get description(): string { return this.shortCommit; }
+	override get label(): string {
+		return `$(lock) ${this.ref.name ?? this.shortCommit}`;
+	}
+}
 
-	constructor(private ref: Ref) { }
+class CheckoutRemoteHeadItem extends RefItem {
 
-	async run(repository: Repository, force?: boolean): Promise<void> {
-		if (!this.branchName) {
+	async run(repository: Repository, opts?: { detached?: boolean }): Promise<void> {
+		if (!this.ref.name) {
 			return;
 		}
-		await repository.deleteBranch(this.branchName, force);
+
+		if (opts?.detached) {
+			await repository.checkout(this.ref.commit ?? this.ref.name, opts);
+			return;
+		}
+
+		const branches = await repository.findTrackingBranches(this.ref.name);
+
+		if (branches.length > 0) {
+			await repository.checkout(branches[0].name!, opts);
+		} else {
+			await repository.checkoutTracking(this.ref.name, opts);
+		}
 	}
 }
 
-class MergeItem implements QuickPickItem {
+class CheckoutTagItem extends RefItem {
 
-	get label(): string { return this.ref.name || ''; }
-	get description(): string { return this.ref.name || ''; }
+	async run(repository: Repository, opts?: { detached?: boolean }): Promise<void> {
+		if (!this.ref.name) {
+			return;
+		}
 
-	constructor(protected ref: Ref) { }
+		await repository.checkout(this.ref.name, opts);
+	}
+}
+
+class BranchDeleteItem extends BranchItem {
+
+	async run(repository: Repository, force?: boolean): Promise<void> {
+		if (this.ref.type === RefType.Head && this.refName) {
+			await repository.deleteBranch(this.refName, force);
+		} else if (this.ref.type === RefType.RemoteHead && this.refRemote && this.refName) {
+			const refName = this.refName.substring(this.refRemote.length + 1);
+			await repository.deleteRemoteRef(this.refRemote, refName, { force });
+		}
+	}
+}
+
+class TagDeleteItem extends RefItem {
 
 	async run(repository: Repository): Promise<void> {
-		await repository.merge(this.ref.name! || this.ref.commit!);
+		if (this.ref.name) {
+			await repository.deleteTag(this.ref.name);
+		}
 	}
 }
 
-class RebaseItem implements QuickPickItem {
+class RemoteTagDeleteItem extends RefItem {
 
-	get label(): string { return this.ref.name || ''; }
-	description: string = '';
+	override get description(): string {
+		return l10n.t('Remote tag at {0}', this.shortCommit);
+	}
 
-	constructor(readonly ref: Ref) { }
+	async run(repository: Repository, remote: string): Promise<void> {
+		if (this.ref.name) {
+			await repository.deleteRemoteRef(remote, this.ref.name);
+		}
+	}
+}
+
+class WorktreeItem implements QuickPickItem {
+
+	get label(): string {
+		return `$(list-tree) ${this.worktree.name}`;
+	}
+
+	get description(): string | undefined {
+		return this.worktree.path;
+	}
+
+	constructor(readonly worktree: Worktree) { }
+}
+
+class WorktreeDeleteItem extends WorktreeItem {
+	override get description(): string | undefined {
+		if (!this.worktree.commitDetails) {
+			return undefined;
+		}
+
+		return coalesce([
+			this.worktree.detached ? l10n.t('detached') : this.worktree.ref.substring(11),
+			this.worktree.commitDetails.hash.substring(0, this.shortCommitLength),
+			this.worktree.commitDetails.message.split('\n')[0]
+		]).join(' \u2022 ');
+	}
+
+	get detail(): string {
+		return this.worktree.path;
+	}
+
+	constructor(worktree: Worktree, private readonly shortCommitLength: number) {
+		super(worktree);
+	}
+
+	async run(mainRepository: Repository): Promise<void> {
+		if (!this.worktree.path) {
+			return;
+		}
+
+		await mainRepository.deleteWorktree(this.worktree.path);
+	}
+}
+
+
+class MergeItem extends BranchItem {
+
+	async run(repository: Repository): Promise<void> {
+		if (this.ref.name || this.ref.commit) {
+			await repository.merge(this.ref.name ?? this.ref.commit!);
+		}
+	}
+}
+
+class RebaseItem extends BranchItem {
 
 	async run(repository: Repository): Promise<void> {
 		if (this.ref?.name) {
@@ -116,30 +291,19 @@ class RebaseItem implements QuickPickItem {
 	}
 }
 
-class CreateBranchItem implements QuickPickItem {
-	get label(): string { return '$(plus) ' + localize('create branch', 'Create new branch...'); }
-	get description(): string { return ''; }
-	get alwaysShow(): boolean { return true; }
-}
+class RebaseUpstreamItem extends RebaseItem {
 
-class CreateBranchFromItem implements QuickPickItem {
-	get label(): string { return '$(plus) ' + localize('create branch from', 'Create new branch from...'); }
-	get description(): string { return ''; }
-	get alwaysShow(): boolean { return true; }
-}
-
-class CheckoutDetachedItem implements QuickPickItem {
-	get label(): string { return '$(debug-disconnect) ' + localize('checkout detached', 'Checkout detached...'); }
-	get description(): string { return ''; }
-	get alwaysShow(): boolean { return true; }
+	override get description(): string {
+		return '(upstream)';
+	}
 }
 
 class HEADItem implements QuickPickItem {
 
-	constructor(private repository: Repository) { }
+	constructor(private repository: Repository, private readonly shortCommitLength: number) { }
 
 	get label(): string { return 'HEAD'; }
-	get description(): string { return (this.repository.HEAD && this.repository.HEAD.commit || '').substr(0, 8); }
+	get description(): string { return (this.repository.HEAD?.commit ?? '').substring(0, this.shortCommitLength); }
 	get alwaysShow(): boolean { return true; }
 	get refName(): string { return 'HEAD'; }
 }
@@ -148,7 +312,7 @@ class AddRemoteItem implements QuickPickItem {
 
 	constructor(private cc: CommandCenter) { }
 
-	get label(): string { return '$(plus) ' + localize('add remote', 'Add a new remote...'); }
+	get label(): string { return '$(plus) ' + l10n.t('Add a new remote...'); }
 	get description(): string { return ''; }
 
 	get alwaysShow(): boolean { return true; }
@@ -158,9 +322,47 @@ class AddRemoteItem implements QuickPickItem {
 	}
 }
 
+class RemoteItem implements QuickPickItem {
+	get label() { return `$(cloud) ${this.remote.name}`; }
+	get description(): string | undefined { return this.remote.fetchUrl; }
+	get remoteName(): string { return this.remote.name; }
+
+	constructor(private readonly repository: Repository, private readonly remote: Remote) { }
+
+	async run(): Promise<void> {
+		await this.repository.fetch({ remote: this.remote.name });
+	}
+}
+
+class FetchAllRemotesItem implements QuickPickItem {
+	get label(): string { return l10n.t('{0} Fetch all remotes', '$(cloud-download)'); }
+
+	constructor(private readonly repository: Repository) { }
+
+	async run(): Promise<void> {
+		await this.repository.fetch({ all: true });
+	}
+}
+
+class RepositoryItem implements QuickPickItem {
+	get label(): string { return `$(repo) ${getRepositoryLabel(this.path)}`; }
+
+	get description(): string { return this.path; }
+
+	constructor(public readonly path: string) { }
+}
+
+class StashItem implements QuickPickItem {
+	get label(): string { return `#${this.stash.index}: ${this.stash.description}`; }
+
+	get description(): string | undefined { return getStashDescription(this.stash); }
+
+	constructor(readonly stash: Stash) { }
+}
+
 interface ScmCommandOptions {
 	repository?: boolean;
-	diff?: boolean;
+	repositoryFilter?: ('repository' | 'submodule' | 'worktree')[];
 }
 
 interface ScmCommand {
@@ -172,13 +374,12 @@ interface ScmCommand {
 
 const Commands: ScmCommand[] = [];
 
-function command(commandId: string, options: ScmCommandOptions = {}): Function {
-	return (_target: any, key: string, descriptor: any) => {
-		if (!(typeof descriptor.value === 'function')) {
+function command(commandId: string, options: ScmCommandOptions = {}): MethodDecorator {
+	return (_target: any, key: string | symbol, descriptor: PropertyDescriptor): void => {
+		if (typeof descriptor.value !== 'function') {
 			throw new Error('not supported');
 		}
-
-		Commands.push({ commandId, key, method: descriptor.value, options });
+		Commands.push({ commandId, key: String(key), method: descriptor.value, options });
 	};
 }
 
@@ -197,7 +398,7 @@ async function categorizeResourceByResolution(resources: Resource[]): Promise<{ 
 	const isBothAddedOrModified = (s: Resource) => s.type === Status.BOTH_MODIFIED || s.type === Status.BOTH_ADDED;
 	const isAnyDeleted = (s: Resource) => s.type === Status.DELETED_BY_THEM || s.type === Status.DELETED_BY_US;
 	const possibleUnresolved = merge.filter(isBothAddedOrModified);
-	const promises = possibleUnresolved.map(s => grep(s.resourceUri.fsPath, /^<{7}|^={7}|^>{7}/));
+	const promises = possibleUnresolved.map(s => grep(s.resourceUri.fsPath, /^<{7}\s|^={7}$|^>{7}\s/));
 	const unresolvedBothModified = await Promise.all<boolean>(promises);
 	const resolved = possibleUnresolved.filter((_s, i) => !unresolvedBothModified[i]);
 	const deletionConflicts = merge.filter(s => isAnyDeleted(s));
@@ -209,9 +410,11 @@ async function categorizeResourceByResolution(resources: Resource[]): Promise<{ 
 	return { merge, resolved, unresolved, deletionConflicts };
 }
 
-function createCheckoutItems(repository: Repository): CheckoutItem[] {
+async function createCheckoutItems(repository: Repository, detached = false): Promise<QuickPickItem[]> {
 	const config = workspace.getConfiguration('git');
 	const checkoutTypeConfig = config.get<string | string[]>('checkoutType');
+	const showRefDetails = config.get<boolean>('showReferenceDetails') === true;
+
 	let checkoutTypes: string[];
 
 	if (checkoutTypeConfig === 'all' || !checkoutTypeConfig || checkoutTypeConfig.length === 0) {
@@ -222,53 +425,235 @@ function createCheckoutItems(repository: Repository): CheckoutItem[] {
 		checkoutTypes = checkoutTypeConfig;
 	}
 
-	const processors = checkoutTypes.map(type => getCheckoutProcessor(repository, type))
-		.filter(p => !!p) as CheckoutProcessor[];
+	if (detached) {
+		// Remove tags when in detached mode
+		checkoutTypes = checkoutTypes.filter(t => t !== 'tags');
+	}
 
-	for (const ref of repository.refs) {
-		for (const processor of processors) {
-			processor.onRef(ref);
+	const refs = await repository.getRefs({ includeCommitDetails: showRefDetails });
+	const refProcessors = checkoutTypes.map(type => getCheckoutRefProcessor(repository, type))
+		.filter(p => !!p) as RefProcessor[];
+
+	const buttons = await getRemoteRefItemButtons(repository);
+	const itemsProcessor = new CheckoutItemsProcessor(repository, refProcessors, buttons, detached);
+
+	return itemsProcessor.processRefs(refs);
+}
+
+type RemoteSourceActionButton = {
+	iconPath: ThemeIcon;
+	tooltip: string;
+	actual: RemoteSourceAction;
+};
+
+async function getRemoteRefItemButtons(repository: Repository) {
+	// Compute actions for all known remotes
+	const remoteUrlsToActions = new Map<string, RemoteSourceActionButton[]>();
+
+	const getButtons = async (remoteUrl: string) => (await getRemoteSourceActions(remoteUrl)).map((action) => ({ iconPath: new ThemeIcon(action.icon), tooltip: action.label, actual: action }));
+
+	for (const remote of repository.remotes) {
+		if (remote.fetchUrl) {
+			const actions = remoteUrlsToActions.get(remote.fetchUrl) ?? [];
+			actions.push(...await getButtons(remote.fetchUrl));
+			remoteUrlsToActions.set(remote.fetchUrl, actions);
+		}
+		if (remote.pushUrl && remote.pushUrl !== remote.fetchUrl) {
+			const actions = remoteUrlsToActions.get(remote.pushUrl) ?? [];
+			actions.push(...await getButtons(remote.pushUrl));
+			remoteUrlsToActions.set(remote.pushUrl, actions);
 		}
 	}
 
-	return processors.reduce<CheckoutItem[]>((r, p) => r.concat(...p.items), []);
+	return remoteUrlsToActions;
 }
 
-class CheckoutProcessor {
+class RefProcessor {
+	protected readonly refs: Ref[] = [];
 
-	private refs: Ref[] = [];
-	get items(): CheckoutItem[] { return this.refs.map(r => new this.ctor(this.repository, r)); }
-	constructor(private repository: Repository, private type: RefType, private ctor: { new(repository: Repository, ref: Ref): CheckoutItem }) { }
+	constructor(protected readonly type: RefType, protected readonly ctor: { new(ref: Ref, shortCommitLength: number): QuickPickItem } = RefItem) { }
 
-	onRef(ref: Ref): void {
-		if (ref.type === this.type) {
-			this.refs.push(ref);
+	processRef(ref: Ref): boolean {
+		if (!ref.name && !ref.commit) {
+			return false;
 		}
+		if (ref.type !== this.type) {
+			return false;
+		}
+
+		this.refs.push(ref);
+		return true;
+	}
+
+	getItems(shortCommitLength: number): QuickPickItem[] {
+		const items = this.refs.map(r => new this.ctor(r, shortCommitLength));
+		return items.length === 0 ? items : [new RefItemSeparator(this.type), ...items];
 	}
 }
 
-function getCheckoutProcessor(repository: Repository, type: string): CheckoutProcessor | undefined {
+class RefItemsProcessor {
+	protected readonly shortCommitLength: number;
+
+	constructor(
+		protected readonly repository: Repository,
+		protected readonly processors: RefProcessor[],
+		protected readonly options: {
+			skipCurrentBranch?: boolean;
+			skipCurrentBranchRemote?: boolean;
+		} = {}
+	) {
+		const config = workspace.getConfiguration('git', Uri.file(repository.root));
+		this.shortCommitLength = config.get<number>('commitShortHashLength', 7);
+	}
+
+	processRefs(refs: Ref[]): QuickPickItem[] {
+		const refsToSkip = this.getRefsToSkip();
+
+		for (const ref of refs) {
+			if (ref.name && refsToSkip.includes(ref.name)) {
+				continue;
+			}
+			for (const processor of this.processors) {
+				if (processor.processRef(ref)) {
+					break;
+				}
+			}
+		}
+
+		const result: QuickPickItem[] = [];
+		for (const processor of this.processors) {
+			result.push(...processor.getItems(this.shortCommitLength));
+		}
+
+		return result;
+	}
+
+	protected getRefsToSkip(): string[] {
+		const refsToSkip = ['origin/HEAD'];
+
+		if (this.options.skipCurrentBranch && this.repository.HEAD?.name) {
+			refsToSkip.push(this.repository.HEAD.name);
+		}
+
+		if (this.options.skipCurrentBranchRemote && this.repository.HEAD?.upstream) {
+			refsToSkip.push(`${this.repository.HEAD.upstream.remote}/${this.repository.HEAD.upstream.name}`);
+		}
+
+		return refsToSkip;
+	}
+}
+
+class CheckoutRefProcessor extends RefProcessor {
+
+	constructor(private readonly repository: Repository) {
+		super(RefType.Head);
+	}
+
+	override getItems(shortCommitLength: number): QuickPickItem[] {
+		const items = this.refs.map(ref => {
+			return this.repository.isBranchProtected(ref) ?
+				new CheckoutProtectedItem(ref, shortCommitLength) :
+				new CheckoutItem(ref, shortCommitLength);
+		});
+
+		return items.length === 0 ? items : [new RefItemSeparator(this.type), ...items];
+	}
+}
+
+class CheckoutItemsProcessor extends RefItemsProcessor {
+
+	private defaultButtons: RemoteSourceActionButton[] | undefined;
+
+	constructor(
+		repository: Repository,
+		processors: RefProcessor[],
+		private readonly buttons: Map<string, RemoteSourceActionButton[]>,
+		private readonly detached = false) {
+		super(repository, processors);
+
+		// Default button(s)
+		const remote = repository.remotes.find(r => r.pushUrl === repository.HEAD?.remote || r.fetchUrl === repository.HEAD?.remote) ?? repository.remotes[0];
+		const remoteUrl = remote?.pushUrl ?? remote?.fetchUrl;
+		if (remoteUrl) {
+			this.defaultButtons = buttons.get(remoteUrl);
+		}
+	}
+
+	override processRefs(refs: Ref[]): QuickPickItem[] {
+		for (const ref of refs) {
+			if (!this.detached && ref.name === 'origin/HEAD') {
+				continue;
+			}
+
+			for (const processor of this.processors) {
+				if (processor.processRef(ref)) {
+					break;
+				}
+			}
+		}
+
+		const result: QuickPickItem[] = [];
+		for (const processor of this.processors) {
+			for (const item of processor.getItems(this.shortCommitLength)) {
+				if (!(item instanceof RefItem)) {
+					result.push(item);
+					continue;
+				}
+
+				// Button(s)
+				if (item.refRemote) {
+					const matchingRemote = this.repository.remotes.find((remote) => remote.name === item.refRemote);
+					const buttons = [];
+					if (matchingRemote?.pushUrl) {
+						buttons.push(...this.buttons.get(matchingRemote.pushUrl) ?? []);
+					}
+					if (matchingRemote?.fetchUrl && matchingRemote.fetchUrl !== matchingRemote.pushUrl) {
+						buttons.push(...this.buttons.get(matchingRemote.fetchUrl) ?? []);
+					}
+					if (buttons.length) {
+						item.buttons = buttons;
+					}
+				} else {
+					item.buttons = this.defaultButtons;
+				}
+
+				result.push(item);
+			}
+		}
+
+		return result;
+	}
+}
+
+function getCheckoutRefProcessor(repository: Repository, type: string): RefProcessor | undefined {
 	switch (type) {
 		case 'local':
-			return new CheckoutProcessor(repository, RefType.Head, CheckoutItem);
+			return new CheckoutRefProcessor(repository);
 		case 'remote':
-			return new CheckoutProcessor(repository, RefType.RemoteHead, CheckoutRemoteHeadItem);
+			return new RefProcessor(RefType.RemoteHead, CheckoutRemoteHeadItem);
 		case 'tags':
-			return new CheckoutProcessor(repository, RefType.Tag, CheckoutTagItem);
+			return new RefProcessor(RefType.Tag, CheckoutTagItem);
+		default:
+			return undefined;
 	}
+}
 
-	return undefined;
+function getRepositoryLabel(repositoryRoot: string): string {
+	const workspaceFolder = workspace.getWorkspaceFolder(Uri.file(repositoryRoot));
+	return workspaceFolder?.uri.toString() === repositoryRoot ? workspaceFolder.name : path.basename(repositoryRoot);
+}
+
+function compareRepositoryLabel(repositoryRoot1: string, repositoryRoot2: string): number {
+	return getRepositoryLabel(repositoryRoot1).localeCompare(getRepositoryLabel(repositoryRoot2));
+}
+
+function sanitizeBranchName(name: string, whitespaceChar: string): string {
+	return name ? name.trim().replace(/^-+/, '').replace(/^\.|\/\.|\.\.|~|\^|:|\/$|\.lock$|\.lock\/|\\|\*|\s|^\s*$|\.$|\[|\]$/g, whitespaceChar) : name;
 }
 
 function sanitizeRemoteName(name: string) {
 	name = name.trim();
 	return name && name.replace(/^\.|\/\.|\.\.|~|\^|:|\/$|\.lock$|\.lock\/|\\|\*|\s|^\s*$|\.$|\[|\]$/g, '-');
-}
-
-class TagItem implements QuickPickItem {
-	get label(): string { return this.ref.name ?? ''; }
-	get description(): string { return this.ref.commit?.substr(0, 8) ?? ''; }
-	constructor(readonly ref: Ref) { }
 }
 
 enum PushType {
@@ -307,6 +692,92 @@ class CommandErrorOutputTextDocumentContentProvider implements TextDocumentConte
 	}
 }
 
+async function evaluateDiagnosticsCommitHook(repository: Repository, options: CommitOptions, logger: LogOutputChannel): Promise<boolean> {
+	const config = workspace.getConfiguration('git', Uri.file(repository.root));
+	const enabled = config.get<boolean>('diagnosticsCommitHook.enabled', false) === true;
+	const sourceSeverity = config.get<Record<string, DiagnosticSeverityConfig>>('diagnosticsCommitHook.sources', { '*': 'error' });
+	logger.trace(`[CommandCenter][evaluateDiagnosticsCommitHook] Diagnostics Commit Hook: enabled=${enabled}, sources=${JSON.stringify(sourceSeverity)}`);
+
+	if (!enabled) {
+		return true;
+	}
+
+	const resources: Uri[] = [];
+	if (repository.indexGroup.resourceStates.length > 0) {
+		// Staged files
+		resources.push(...repository.indexGroup.resourceStates.map(r => r.resourceUri));
+	} else if (options.all === 'tracked') {
+		// Tracked files
+		resources.push(...repository.workingTreeGroup.resourceStates
+			.filter(r => r.type !== Status.UNTRACKED && r.type !== Status.IGNORED)
+			.map(r => r.resourceUri));
+	} else {
+		// All files
+		resources.push(...repository.workingTreeGroup.resourceStates.map(r => r.resourceUri));
+		resources.push(...repository.untrackedGroup.resourceStates.map(r => r.resourceUri));
+	}
+
+	const diagnostics: Map<Uri, number> = new Map();
+
+	for (const resource of resources) {
+		const unresolvedDiagnostics = languages.getDiagnostics(resource)
+			.filter(d => {
+				logger.trace(`[CommandCenter][evaluateDiagnosticsCommitHook] Evaluating diagnostic for ${resource.fsPath}: source='${d.source}', severity='${d.severity}'`);
+
+				// No source or ignored source
+				if (!d.source || (Object.keys(sourceSeverity).includes(d.source) && sourceSeverity[d.source] === 'none')) {
+					logger.trace(`[CommandCenter][evaluateDiagnosticsCommitHook] Ignoring diagnostic for ${resource.fsPath}: source='${d.source}', severity='${d.severity}'`);
+					return false;
+				}
+
+				// Source severity
+				if (Object.keys(sourceSeverity).includes(d.source) && d.severity <= toDiagnosticSeverity(sourceSeverity[d.source])) {
+					logger.trace(`[CommandCenter][evaluateDiagnosticsCommitHook] Found unresolved diagnostic for ${resource.fsPath}: source='${d.source}', severity='${d.severity}'`);
+					return true;
+				}
+
+				// Wildcard severity
+				if (Object.keys(sourceSeverity).includes('*') && d.severity <= toDiagnosticSeverity(sourceSeverity['*'])) {
+					logger.trace(`[CommandCenter][evaluateDiagnosticsCommitHook] Found unresolved diagnostic for ${resource.fsPath}: source='${d.source}', severity='${d.severity}'`);
+					return true;
+				}
+
+				logger.trace(`[CommandCenter][evaluateDiagnosticsCommitHook] Ignoring diagnostic for ${resource.fsPath}: source='${d.source}', severity='${d.severity}'`);
+				return false;
+			});
+
+		if (unresolvedDiagnostics.length > 0) {
+			diagnostics.set(resource, unresolvedDiagnostics.length);
+		}
+	}
+
+	if (diagnostics.size === 0) {
+		return true;
+	}
+
+	// Show dialog
+	const commit = l10n.t('Commit Anyway');
+	const view = l10n.t('View Problems');
+
+	const message = diagnostics.size === 1
+		? l10n.t('The following file has unresolved diagnostics: \'{0}\'.\n\nHow would you like to proceed?', path.basename(diagnostics.keys().next().value!.fsPath))
+		: l10n.t('There are {0} files that have unresolved diagnostics.\n\nHow would you like to proceed?', diagnostics.size);
+
+	const choice = await window.showWarningMessage(message, { modal: true }, commit, view);
+
+	// Commit Anyway
+	if (choice === commit) {
+		return true;
+	}
+
+	// View Problems
+	if (choice === view) {
+		commands.executeCommand('workbench.panel.markers.view.focus');
+	}
+
+	return false;
+}
+
 export class CommandCenter {
 
 	private disposables: Disposable[];
@@ -315,68 +786,27 @@ export class CommandCenter {
 	constructor(
 		private git: Git,
 		private model: Model,
-		private outputChannelLogger: OutputChannelLogger,
-		private telemetryReporter: TelemetryReporter
+		private globalState: Memento,
+		private logger: LogOutputChannel,
+		private telemetryReporter: TelemetryReporter,
+		private cloneManager: CloneManager
 	) {
 		this.disposables = Commands.map(({ commandId, key, method, options }) => {
 			const command = this.createCommand(commandId, key, method, options);
-
-			if (options.diff) {
-				return commands.registerDiffInformationCommand(commandId, command);
-			} else {
-				return commands.registerCommand(commandId, command);
-			}
+			return commands.registerCommand(commandId, command);
 		});
 
 		this.disposables.push(workspace.registerTextDocumentContentProvider('git-output', this.commandErrors));
 	}
 
-	@command('git.setLogLevel')
-	async setLogLevel(): Promise<void> {
-		const createItem = (logLevel: LogLevel) => {
-			let description: string | undefined;
-			const defaultDescription = localize('default', "Default");
-			const currentDescription = localize('current', "Current");
-
-			if (logLevel === this.outputChannelLogger.defaultLogLevel && logLevel === this.outputChannelLogger.currentLogLevel) {
-				description = `${defaultDescription} & ${currentDescription} `;
-			} else if (logLevel === this.outputChannelLogger.defaultLogLevel) {
-				description = defaultDescription;
-			} else if (logLevel === this.outputChannelLogger.currentLogLevel) {
-				description = currentDescription;
-			}
-
-			return {
-				label: LogLevel[logLevel],
-				logLevel,
-				description
-			};
-		};
-
-		const items = [
-			createItem(LogLevel.Trace),
-			createItem(LogLevel.Debug),
-			createItem(LogLevel.Info),
-			createItem(LogLevel.Warning),
-			createItem(LogLevel.Error),
-			createItem(LogLevel.Critical),
-			createItem(LogLevel.Off)
-		];
-
-		const choice = await window.showQuickPick(items, {
-			placeHolder: localize('select log level', "Select log level")
-		});
-
-		if (!choice) {
-			return;
-		}
-
-		this.outputChannelLogger.currentLogLevel = choice.logLevel;
+	@command('git.showOutput')
+	showOutput(): void {
+		this.logger.show();
 	}
 
 	@command('git.refresh', { repository: true })
 	async refresh(repository: Repository): Promise<void> {
-		await repository.status();
+		await repository.refresh();
 	}
 
 	@command('git.openResource')
@@ -408,8 +838,14 @@ export class CommandCenter {
 		}
 	}
 
-	@command('_git.openMergeEditor')
+	@command('git.openMergeEditor')
 	async openMergeEditor(uri: unknown) {
+		if (uri === undefined) {
+			// fallback to active editor...
+			if (window.tabGroups.activeTabGroup.activeTab?.input instanceof TabInputText) {
+				uri = window.tabGroups.activeTabGroup.activeTab.input.uri;
+			}
+		}
 		if (!(uri instanceof Uri)) {
 			return;
 		}
@@ -422,21 +858,54 @@ export class CommandCenter {
 
 		type InputData = { uri: Uri; title?: string; detail?: string; description?: string };
 		const mergeUris = toMergeUris(uri);
-		const ours: InputData = { uri: mergeUris.ours, title: localize('Yours', 'Yours') };
-		const theirs: InputData = { uri: mergeUris.theirs, title: localize('Theirs', 'Theirs') };
+
+		let isStashConflict = false;
+		try {
+			// Look at the conflict markers to check if this is a stash conflict
+			const document = await workspace.openTextDocument(uri);
+			const firstConflictInfo = findFirstConflictMarker(document);
+			isStashConflict = firstConflictInfo?.incomingChangeLabel === 'Stashed changes';
+		} catch (error) {
+			console.error(error);
+		}
+
+		const current: InputData = { uri: mergeUris.ours, title: l10n.t('Current') };
+		const incoming: InputData = { uri: mergeUris.theirs, title: l10n.t('Incoming') };
+
+		if (isStashConflict) {
+			incoming.title = l10n.t('Stashed Changes');
+		}
 
 		try {
-			const [head, rebaseOrMergeHead] = await Promise.all([
+			const [head, rebaseOrMergeHead, oursDiff, theirsDiff] = await Promise.all([
 				repo.getCommit('HEAD'),
-				isRebasing ? repo.getCommit('REBASE_HEAD') : repo.getCommit('MERGE_HEAD')
+				isRebasing ? repo.getCommit('REBASE_HEAD') : repo.getCommit('MERGE_HEAD'),
+				await repo.diffBetween(isRebasing ? 'REBASE_HEAD' : 'MERGE_HEAD', 'HEAD'),
+				await repo.diffBetween('HEAD', isRebasing ? 'REBASE_HEAD' : 'MERGE_HEAD')
 			]);
+
+			const oursDiffFile = oursDiff?.find(diff => diff.uri.fsPath === uri.fsPath);
+			const theirsDiffFile = theirsDiff?.find(diff => diff.uri.fsPath === uri.fsPath);
+
 			// ours (current branch and commit)
-			ours.detail = head.refNames.map(s => s.replace(/^HEAD ->/, '')).join(', ');
-			ours.description = head.hash.substring(0, 7);
+			current.detail = head.refNames.map(s => s.replace(/^HEAD ->/, '')).join(', ');
+			current.description = '$(git-commit) ' + head.hash.substring(0, 7);
+			if (theirsDiffFile) {
+				// use the original uri in case the file was renamed by theirs
+				current.uri = toGitUri(theirsDiffFile.originalUri, head.hash);
+			} else {
+				current.uri = toGitUri(uri, head.hash);
+			}
 
 			// theirs
-			theirs.detail = rebaseOrMergeHead.refNames.join(', ');
-			theirs.description = rebaseOrMergeHead.hash.substring(0, 7);
+			incoming.detail = rebaseOrMergeHead.refNames.join(', ');
+			incoming.description = '$(git-commit) ' + rebaseOrMergeHead.hash.substring(0, 7);
+			if (oursDiffFile) {
+				// use the original uri in case the file was renamed by ours
+				incoming.uri = toGitUri(oursDiffFile.originalUri, rebaseOrMergeHead.hash);
+			} else {
+				incoming.uri = toGitUri(uri, rebaseOrMergeHead.hash);
+			}
 
 		} catch (error) {
 			// not so bad, can continue with just uris
@@ -446,8 +915,8 @@ export class CommandCenter {
 
 		const options = {
 			base: mergeUris.base,
-			input1: isRebasing ? ours : theirs,
-			input2: isRebasing ? theirs : ours,
+			input1: isRebasing ? current : incoming,
+			input2: isRebasing ? incoming : current,
 			output: uri
 		};
 
@@ -455,153 +924,189 @@ export class CommandCenter {
 			'_open.mergeEditor',
 			options
 		);
+
+		function findFirstConflictMarker(doc: TextDocument): { currentChangeLabel: string; incomingChangeLabel: string } | undefined {
+			const conflictMarkerStart = '<<<<<<<';
+			const conflictMarkerEnd = '>>>>>>>';
+			let inConflict = false;
+			let currentChangeLabel: string = '';
+			let incomingChangeLabel: string = '';
+			let hasConflict = false;
+
+			for (let lineIdx = 0; lineIdx < doc.lineCount; lineIdx++) {
+				const lineStr = doc.lineAt(lineIdx).text;
+				if (!inConflict) {
+					if (lineStr.startsWith(conflictMarkerStart)) {
+						currentChangeLabel = lineStr.substring(conflictMarkerStart.length).trim();
+						inConflict = true;
+						hasConflict = true;
+					}
+				} else {
+					if (lineStr.startsWith(conflictMarkerEnd)) {
+						incomingChangeLabel = lineStr.substring(conflictMarkerStart.length).trim();
+						inConflict = false;
+						break;
+					}
+				}
+			}
+			if (hasConflict) {
+				return {
+					currentChangeLabel,
+					incomingChangeLabel
+				};
+			}
+			return undefined;
+		}
 	}
 
-	async cloneRepository(url?: string, parentPath?: string, options: { recursive?: boolean } = {}): Promise<void> {
-		if (!url || typeof url !== 'string') {
-			url = await pickRemoteSource({
-				providerLabel: provider => localize('clonefrom', "Clone from {0}", provider.name),
-				urlLabel: localize('repourl', "Clone from URL")
-			});
-		}
+	private getRepositoriesWithRemote(repositories: Repository[]) {
+		return repositories.reduce<(QuickPickItem & { repository: Repository })[]>((items, repository) => {
+			const remote = repository.remotes.find((r) => r.name === repository.HEAD?.upstream?.remote);
+			if (remote?.pushUrl) {
+				items.push({ repository: repository, label: remote.pushUrl });
+			}
+			return items;
+		}, []);
+	}
 
-		if (!url) {
-			/* __GDPR__
-				"clone" : {
-					"owner": "lszomoru",
-					"outcome" : { "classification": "SystemMetaData", "purpose": "FeatureInsight" }
-				}
-			*/
-			this.telemetryReporter.sendTelemetryEvent('clone', { outcome: 'no_URL' });
-			return;
-		}
+	@command('git.continueInLocalClone')
+	async continueInLocalClone(): Promise<Uri | void> {
+		if (this.model.repositories.length === 0) { return; }
 
-		url = url.trim().replace(/^git\s+clone\s+/, '');
+		// Pick a single repository to continue working on in a local clone if there's more than one
+		let items = this.getRepositoriesWithRemote(this.model.repositories);
 
-		if (!parentPath) {
-			const config = workspace.getConfiguration('git');
-			let defaultCloneDirectory = config.get<string>('defaultCloneDirectory') || os.homedir();
-			defaultCloneDirectory = defaultCloneDirectory.replace(/^~/, os.homedir());
+		// We have a repository but there is no remote URL (e.g. git init)
+		if (items.length === 0) {
+			const pick = this.model.repositories.length === 1
+				? { repository: this.model.repositories[0] }
+				: await window.showQuickPick(this.model.repositories.map((i) => ({ repository: i, label: i.root })), { canPickMany: false, placeHolder: l10n.t('Choose which repository to publish') });
+			if (!pick) { return; }
 
-			const uris = await window.showOpenDialog({
-				canSelectFiles: false,
-				canSelectFolders: true,
-				canSelectMany: false,
-				defaultUri: Uri.file(defaultCloneDirectory),
-				openLabel: localize('selectFolder', "Select Repository Location")
-			});
+			await this.publish(pick.repository);
 
-			if (!uris || uris.length === 0) {
-				/* __GDPR__
-					"clone" : {
-						"owner": "lszomoru",
-						"outcome" : { "classification": "SystemMetaData", "purpose": "FeatureInsight" }
-					}
-				*/
-				this.telemetryReporter.sendTelemetryEvent('clone', { outcome: 'no_directory' });
+			items = this.getRepositoriesWithRemote([pick.repository]);
+			if (items.length === 0) {
 				return;
 			}
-
-			const uri = uris[0];
-			parentPath = uri.fsPath;
 		}
 
-		try {
-			const opts = {
-				location: ProgressLocation.Notification,
-				title: localize('cloning', "Cloning git repository '{0}'...", url),
-				cancellable: true
-			};
+		let selection = items[0];
+		if (items.length > 1) {
+			const pick = await window.showQuickPick(items, { canPickMany: false, placeHolder: l10n.t('Choose which repository to clone') });
+			if (pick === undefined) { return; }
+			selection = pick;
+		}
 
-			const repositoryPath = await window.withProgress(
-				opts,
-				(progress, token) => this.git.clone(url!, { parentPath: parentPath!, progress, recursive: options.recursive }, token)
-			);
+		const uri = selection.label;
+		const ref = selection.repository.HEAD?.upstream?.name;
 
-			const config = workspace.getConfiguration('git');
-			const openAfterClone = config.get<'always' | 'alwaysNewWindow' | 'whenNoFolderOpen' | 'prompt'>('openAfterClone');
+		if (uri !== undefined) {
+			let target = `${env.uriScheme}://vscode.git/clone?url=${encodeURIComponent(uri)}`;
+			const isWeb = env.uiKind === UIKind.Web;
+			const isRemote = env.remoteName !== undefined;
 
-			enum PostCloneAction { Open, OpenNewWindow, AddToWorkspace }
-			let action: PostCloneAction | undefined = undefined;
-
-			if (openAfterClone === 'always') {
-				action = PostCloneAction.Open;
-			} else if (openAfterClone === 'alwaysNewWindow') {
-				action = PostCloneAction.OpenNewWindow;
-			} else if (openAfterClone === 'whenNoFolderOpen' && !workspace.workspaceFolders) {
-				action = PostCloneAction.Open;
-			}
-
-			if (action === undefined) {
-				let message = localize('proposeopen', "Would you like to open the cloned repository?");
-				const open = localize('openrepo', "Open");
-				const openNewWindow = localize('openreponew', "Open in New Window");
-				const choices = [open, openNewWindow];
-
-				const addToWorkspace = localize('add', "Add to Workspace");
-				if (workspace.workspaceFolders) {
-					message = localize('proposeopen2', "Would you like to open the cloned repository, or add it to the current workspace?");
-					choices.push(addToWorkspace);
+			if (isWeb || isRemote) {
+				if (ref !== undefined) {
+					target += `&ref=${encodeURIComponent(ref)}`;
 				}
 
-				const result = await window.showInformationMessage(message, ...choices);
-
-				action = result === open ? PostCloneAction.Open
-					: result === openNewWindow ? PostCloneAction.OpenNewWindow
-						: result === addToWorkspace ? PostCloneAction.AddToWorkspace : undefined;
-			}
-
-			/* __GDPR__
-				"clone" : {
-					"owner": "lszomoru",
-					"outcome" : { "classification": "SystemMetaData", "purpose": "FeatureInsight" },
-					"openFolder": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "isMeasurement": true }
+				if (isWeb) {
+					// Launch desktop client if currently in web
+					return Uri.parse(target);
 				}
-			*/
-			this.telemetryReporter.sendTelemetryEvent('clone', { outcome: 'success' }, { openFolder: action === PostCloneAction.Open || action === PostCloneAction.OpenNewWindow ? 1 : 0 });
 
-			const uri = Uri.file(repositoryPath);
-
-			if (action === PostCloneAction.Open) {
-				commands.executeCommand('vscode.openFolder', uri, { forceReuseWindow: true });
-			} else if (action === PostCloneAction.AddToWorkspace) {
-				workspace.updateWorkspaceFolders(workspace.workspaceFolders!.length, 0, { uri });
-			} else if (action === PostCloneAction.OpenNewWindow) {
-				commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: true });
-			}
-		} catch (err) {
-			if (/already exists and is not an empty directory/.test(err && err.stderr || '')) {
-				/* __GDPR__
-					"clone" : {
-						"owner": "lszomoru",
-						"outcome" : { "classification": "SystemMetaData", "purpose": "FeatureInsight" }
-					}
-				*/
-				this.telemetryReporter.sendTelemetryEvent('clone', { outcome: 'directory_not_empty' });
-			} else if (/Cancelled/i.test(err && (err.message || err.stderr || ''))) {
-				return;
-			} else {
-				/* __GDPR__
-					"clone" : {
-						"owner": "lszomoru",
-						"outcome" : { "classification": "SystemMetaData", "purpose": "FeatureInsight" }
-					}
-				*/
-				this.telemetryReporter.sendTelemetryEvent('clone', { outcome: 'error' });
+				if (isRemote) {
+					// If already in desktop client but in a remote window, we need to force a new window
+					// so that the git extension can access the local filesystem for cloning
+					target += `&windowId=_blank`;
+					return Uri.parse(target);
+				}
 			}
 
-			throw err;
+			// Otherwise, directly clone
+			void this.clone(uri, undefined, { ref: ref });
 		}
 	}
 
 	@command('git.clone')
-	async clone(url?: string, parentPath?: string): Promise<void> {
-		await this.cloneRepository(url, parentPath);
+	async clone(url?: string, parentPath?: string, options?: { ref?: string; postCloneAction?: 'none' }): Promise<string | undefined> {
+		return this.cloneManager.clone(url, { parentPath, ...options });
 	}
 
 	@command('git.cloneRecursive')
 	async cloneRecursive(url?: string, parentPath?: string): Promise<void> {
-		await this.cloneRepository(url, parentPath, { recursive: true });
+		await this.cloneManager.clone(url, { parentPath, recursive: true });
+	}
+
+	@command('_git.cloneRepository')
+	async cloneRepository(url: string, localPath: string, ref?: string): Promise<void> {
+		const opts = {
+			location: ProgressLocation.Notification,
+			title: l10n.t('Cloning git repository "{0}"...', url),
+			cancellable: true
+		};
+
+		const parentPath = path.dirname(localPath);
+		const targetName = path.basename(localPath);
+
+		await window.withProgress(
+			opts,
+			(progress, token) => this.model.git.clone(url, { parentPath, targetName, progress, ref }, token)
+		);
+	}
+
+	@command('_git.checkout')
+	async checkoutRepository(repositoryPath: string, treeish: string, detached?: boolean): Promise<void> {
+		const dotGit = await this.git.getRepositoryDotGit(repositoryPath);
+		const repo = new GitRepository(this.git, repositoryPath, undefined, dotGit, this.logger);
+		await repo.checkout(treeish, [], detached ? { detached: true } : {});
+	}
+
+	@command('_git.pull')
+	async pullRepository(repositoryPath: string): Promise<boolean> {
+		const dotGit = await this.git.getRepositoryDotGit(repositoryPath);
+		const repo = new GitRepository(this.git, repositoryPath, undefined, dotGit, this.logger);
+		return repo.pull();
+	}
+
+	@command('_git.fetchRepository')
+	async fetchRepository(repositoryPath: string): Promise<void> {
+		const dotGit = await this.git.getRepositoryDotGit(repositoryPath);
+		const repo = new GitRepository(this.git, repositoryPath, undefined, dotGit, this.logger);
+		await repo.fetch();
+	}
+
+	@command('_git.revParse')
+	async revParse(repositoryPath: string, ref: string): Promise<string> {
+		const dotGit = await this.git.getRepositoryDotGit(repositoryPath);
+		const repo = new GitRepository(this.git, repositoryPath, undefined, dotGit, this.logger);
+		const result = await repo.exec(['rev-parse', ref]);
+		return result.stdout.trim();
+	}
+
+	@command('_git.revListCount')
+	async revListCount(repositoryPath: string, fromRef: string, toRef: string): Promise<number> {
+		const dotGit = await this.git.getRepositoryDotGit(repositoryPath);
+		const repo = new GitRepository(this.git, repositoryPath, undefined, dotGit, this.logger);
+		const result = await repo.exec(['rev-list', '--count', `${fromRef}..${toRef}`]);
+		return Number(result.stdout.trim()) || 0;
+	}
+
+	@command('_git.revParseAbbrevRef')
+	async revParseAbbrevRef(repositoryPath: string): Promise<string> {
+		const dotGit = await this.git.getRepositoryDotGit(repositoryPath);
+		const repo = new GitRepository(this.git, repositoryPath, undefined, dotGit, this.logger);
+		const result = await repo.exec(['rev-parse', '--abbrev-ref', 'HEAD']);
+		return result.stdout.trim();
+	}
+
+	@command('_git.mergeBranch')
+	async mergeBranch(repositoryPath: string, branch: string): Promise<string> {
+		const dotGit = await this.git.getRepositoryDotGit(repositoryPath);
+		const repo = new GitRepository(this.git, repositoryPath, undefined, dotGit, this.logger);
+		const result = await repo.exec(['merge', branch, '--no-edit']);
+		return result.stdout.trim();
 	}
 
 	@command('git.init')
@@ -614,8 +1119,8 @@ export class CommandCenter {
 				repositoryPath = workspace.workspaceFolders[0].uri.fsPath;
 				askToOpen = false;
 			} else {
-				const placeHolder = localize('init', "Pick workspace folder to initialize git repo in");
-				const pick = { label: localize('choose', "Choose Folder...") };
+				const placeHolder = l10n.t('Pick workspace folder to initialize git repo in');
+				const pick = { label: l10n.t('Choose Folder...') };
 				const items: { label: string; folder?: WorkspaceFolder }[] = [
 					...workspace.workspaceFolders.map(folder => ({ label: folder.name, description: folder.uri.fsPath, folder })),
 					pick
@@ -642,7 +1147,7 @@ export class CommandCenter {
 				canSelectFolders: true,
 				canSelectMany: false,
 				defaultUri,
-				openLabel: localize('init repo', "Initialize Repository")
+				openLabel: l10n.t('Initialize Repository')
 			});
 
 			if (!result || result.length === 0) {
@@ -652,8 +1157,8 @@ export class CommandCenter {
 			const uri = result[0];
 
 			if (homeUri.toString().startsWith(uri.toString())) {
-				const yes = localize('create repo', "Initialize Repository");
-				const answer = await window.showWarningMessage(localize('are you sure', "This will create a Git repository in '{0}'. Are you sure you want to continue?", uri.fsPath), yes);
+				const yes = l10n.t('Initialize Repository');
+				const answer = await window.showWarningMessage(l10n.t('This will create a Git repository in "{0}". Are you sure you want to continue?', uri.fsPath), yes);
 
 				if (answer !== yes) {
 					return;
@@ -667,20 +1172,25 @@ export class CommandCenter {
 			}
 		}
 
-		await this.git.init(repositoryPath);
+		const config = workspace.getConfiguration('git');
+		const defaultBranchName = config.get<string>('defaultBranchName', 'main');
+		const branchWhitespaceChar = config.get<string>('branchWhitespaceChar', '-');
 
-		let message = localize('proposeopen init', "Would you like to open the initialized repository?");
-		const open = localize('openrepo', "Open");
-		const openNewWindow = localize('openreponew', "Open in New Window");
+		await this.git.init(repositoryPath, { defaultBranch: sanitizeBranchName(defaultBranchName, branchWhitespaceChar) });
+
+		let message = l10n.t('Would you like to open the initialized repository?');
+		const open = l10n.t('Open');
+		const openNewWindow = l10n.t('Open in New Window');
 		const choices = [open, openNewWindow];
 
 		if (!askToOpen) {
+			await this.model.openRepository(repositoryPath);
 			return;
 		}
 
-		const addToWorkspace = localize('add', "Add to Workspace");
+		const addToWorkspace = l10n.t('Add to Workspace');
 		if (workspace.workspaceFolders) {
-			message = localize('proposeopen2 init', "Would you like to open the initialized repository, or add it to the current workspace?");
+			message = l10n.t('Would you like to open the initialized repository, or add it to the current workspace?');
 			choices.push(addToWorkspace);
 		}
 
@@ -706,7 +1216,7 @@ export class CommandCenter {
 				canSelectFolders: true,
 				canSelectMany: false,
 				defaultUri: Uri.file(os.homedir()),
-				openLabel: localize('open repo', "Open Repository")
+				openLabel: l10n.t('Open Repository')
 			});
 
 			if (!result || result.length === 0) {
@@ -716,12 +1226,70 @@ export class CommandCenter {
 			path = result[0].fsPath;
 		}
 
-		await this.model.openRepository(path);
+		await this.model.openRepository(path, true, true);
+	}
+
+	@command('git.reopenClosedRepositories', { repository: false })
+	async reopenClosedRepositories(): Promise<void> {
+		if (this.model.closedRepositories.length === 0) {
+			return;
+		}
+
+		const closedRepositories: string[] = [];
+
+		const title = l10n.t('Reopen Closed Repositories');
+		const placeHolder = l10n.t('Pick a repository to reopen');
+
+		const allRepositoriesLabel = l10n.t('All Repositories');
+		const allRepositoriesQuickPickItem: QuickPickItem = { label: allRepositoriesLabel };
+		const repositoriesQuickPickItems: QuickPickItem[] = this.model.closedRepositories
+			.sort(compareRepositoryLabel).map(r => new RepositoryItem(r));
+
+		const items = this.model.closedRepositories.length === 1 ? [...repositoriesQuickPickItems] :
+			[...repositoriesQuickPickItems, { label: '', kind: QuickPickItemKind.Separator }, allRepositoriesQuickPickItem];
+
+		const repositoryItem = await window.showQuickPick(items, { title, placeHolder });
+		if (!repositoryItem) {
+			return;
+		}
+
+		if (repositoryItem === allRepositoriesQuickPickItem) {
+			// All Repositories
+			closedRepositories.push(...this.model.closedRepositories.values());
+		} else {
+			// One Repository
+			closedRepositories.push((repositoryItem as RepositoryItem).path);
+		}
+
+		for (const repository of closedRepositories) {
+			await this.model.openRepository(repository, true, true);
+		}
 	}
 
 	@command('git.close', { repository: true })
-	async close(repository: Repository): Promise<void> {
-		this.model.close(repository);
+	async close(repository: Repository, ...args: SourceControl[]): Promise<void> {
+		const otherRepositories = args
+			.map(sourceControl => this.model.getRepository(sourceControl))
+			.filter(isDefined);
+
+		for (const r of [repository, ...otherRepositories]) {
+			this.model.close(r);
+		}
+	}
+
+	@command('git.closeOtherRepositories', { repository: true })
+	async closeOtherRepositories(repository: Repository, ...args: SourceControl[]): Promise<void> {
+		const otherRepositories = args
+			.map(sourceControl => this.model.getRepository(sourceControl))
+			.filter(isDefined);
+
+		const selectedRepositories = [repository, ...otherRepositories];
+		for (const r of this.model.repositories) {
+			if (selectedRepositories.includes(r)) {
+				continue;
+			}
+			this.model.close(r);
+		}
 	}
 
 	@command('git.openFile')
@@ -759,7 +1327,7 @@ export class CommandCenter {
 
 		const activeTextEditor = window.activeTextEditor;
 		// Must extract these now because opening a new document will change the activeTextEditor reference
-		const previousVisibleRange = activeTextEditor?.visibleRanges[0];
+		const previousVisibleRanges = activeTextEditor?.visibleRanges;
 		const previousURI = activeTextEditor?.document.uri;
 		const previousSelection = activeTextEditor?.selection;
 
@@ -778,7 +1346,7 @@ export class CommandCenter {
 			const document = window.activeTextEditor?.document;
 
 			// If the document doesn't match what we opened then don't attempt to select the range
-			// Additioanlly if there was no previous document we don't have information to select a range
+			// Additionally if there was no previous document we don't have information to select a range
 			if (document?.uri.toString() !== uri.toString() || !activeTextEditor || !previousURI || !previousSelection) {
 				continue;
 			}
@@ -790,8 +1358,13 @@ export class CommandCenter {
 				opts.selection = previousSelection;
 				const editor = await window.showTextDocument(document, opts);
 				// This should always be defined but just in case
-				if (previousVisibleRange) {
-					editor.revealRange(previousVisibleRange);
+				if (previousVisibleRanges && previousVisibleRanges.length > 0) {
+					let rangeToReveal = previousVisibleRanges[0];
+					if (previousSelection && previousVisibleRanges.length > 1) {
+						// In case of multiple visible ranges, find the one that intersects with the selection
+						rangeToReveal = previousVisibleRanges.find(r => r.intersection(previousSelection)) ?? rangeToReveal;
+					}
+					editor.revealRange(rangeToReveal);
 				}
 			}
 		}
@@ -824,7 +1397,7 @@ export class CommandCenter {
 		const title = `${basename} (HEAD)`;
 
 		if (!HEAD) {
-			window.showWarningMessage(localize('HEAD not available', "HEAD version of '{0}' is not available.", path.basename(resource.resourceUri.fsPath)));
+			window.showWarningMessage(l10n.t('HEAD version of "{0}" is not available.', path.basename(resource.resourceUri.fsPath)));
 			return;
 		}
 
@@ -867,6 +1440,15 @@ export class CommandCenter {
 		}
 	}
 
+	@command('git.compareWithWorkspace')
+	async compareWithWorkspace(resource?: Resource): Promise<void> {
+		if (!resource) {
+			return;
+		}
+
+		await resource.compareWithWorkspace();
+	}
+
 	@command('git.rename', { repository: true })
 	async rename(repository: Repository, fromUri: Uri | undefined): Promise<void> {
 		fromUri = fromUri ?? window.activeTextEditor?.document.uri;
@@ -888,18 +1470,57 @@ export class CommandCenter {
 		}
 
 		await repository.move(from, to);
+
+		// Close active editor and open the renamed file
+		await commands.executeCommand('workbench.action.closeActiveEditor');
+		await commands.executeCommand('vscode.open', Uri.file(path.join(repository.root, to)), { viewColumn: ViewColumn.Active });
+	}
+
+	@command('git.delete')
+	async delete(uri: Uri | undefined): Promise<void> {
+		const activeDocument = window.activeTextEditor?.document;
+		uri = uri ?? activeDocument?.uri;
+		if (!uri) {
+			return;
+		}
+
+		const repository = this.model.getRepository(uri);
+		if (!repository) {
+			return;
+		}
+
+		const allChangedResources = [
+			...repository.workingTreeGroup.resourceStates,
+			...repository.indexGroup.resourceStates,
+			...repository.mergeGroup.resourceStates,
+			...repository.untrackedGroup.resourceStates
+		];
+
+		// Check if file has uncommitted changes
+		const uriString = uri.toString();
+		if (allChangedResources.some(o => pathEquals(o.resourceUri.toString(), uriString))) {
+			window.showInformationMessage(l10n.t('Git: Delete can only be performed on committed files without uncommitted changes.'));
+			return;
+		}
+
+		await repository.rm([uri]);
+
+		// Close the active editor if it's not dirty
+		if (activeDocument && !activeDocument.isDirty && pathEquals(activeDocument.uri.toString(), uriString)) {
+			await commands.executeCommand('workbench.action.closeActiveEditor');
+		}
 	}
 
 	@command('git.stage')
 	async stage(...resourceStates: SourceControlResourceState[]): Promise<void> {
-		this.outputChannelLogger.logDebug(`git.stage ${resourceStates.length} `);
+		this.logger.debug(`[CommandCenter][stage] git.stage ${resourceStates.length} `);
 
 		resourceStates = resourceStates.filter(s => !!s);
 
 		if (resourceStates.length === 0 || (resourceStates[0] && !(resourceStates[0].resourceUri instanceof Uri))) {
 			const resource = this.getSCMResource();
 
-			this.outputChannelLogger.logDebug(`git.stage.getSCMResource ${resource ? resource.resourceUri.toString() : null} `);
+			this.logger.debug(`[CommandCenter][stage] git.stage.getSCMResource ${resource ? resource.resourceUri.toString() : null} `);
 
 			if (!resource) {
 				return;
@@ -913,10 +1534,10 @@ export class CommandCenter {
 
 		if (unresolved.length > 0) {
 			const message = unresolved.length > 1
-				? localize('confirm stage files with merge conflicts', "Are you sure you want to stage {0} files with merge conflicts?", unresolved.length)
-				: localize('confirm stage file with merge conflicts', "Are you sure you want to stage {0} with merge conflicts?", path.basename(unresolved[0].resourceUri.fsPath));
+				? l10n.t('Are you sure you want to stage {0} files with merge conflicts?', unresolved.length)
+				: l10n.t('Are you sure you want to stage {0} with merge conflicts?', path.basename(unresolved[0].resourceUri.fsPath));
 
-			const yes = localize('yes', "Yes");
+			const yes = l10n.t('Yes');
 			const pick = await window.showWarningMessage(message, { modal: true }, yes);
 
 			if (pick !== yes) {
@@ -942,7 +1563,7 @@ export class CommandCenter {
 		const untracked = selection.filter(s => s.resourceGroupType === ResourceGroupType.Untracked);
 		const scmResources = [...workingTree, ...untracked, ...resolved, ...unresolved];
 
-		this.outputChannelLogger.logDebug(`git.stage.scmResources ${scmResources.length} `);
+		this.logger.debug(`[CommandCenter][stage] git.stage.scmResources ${scmResources.length} `);
 		if (!scmResources.length) {
 			return;
 		}
@@ -972,9 +1593,9 @@ export class CommandCenter {
 		}
 
 		if (resource.type === Status.DELETED_BY_THEM) {
-			const keepIt = localize('keep ours', "Keep Our Version");
-			const deleteIt = localize('delete', "Delete File");
-			const result = await window.showInformationMessage(localize('deleted by them', "File '{0}' was deleted by them and modified by us.\n\nWhat would you like to do?", path.basename(uri.fsPath)), { modal: true }, keepIt, deleteIt);
+			const keepIt = l10n.t('Keep Our Version');
+			const deleteIt = l10n.t('Delete File');
+			const result = await window.showInformationMessage(l10n.t('File "{0}" was deleted by them and modified by us.\n\nWhat would you like to do?', path.basename(uri.fsPath)), { modal: true }, keepIt, deleteIt);
 
 			if (result === keepIt) {
 				await repository.add([uri]);
@@ -984,9 +1605,9 @@ export class CommandCenter {
 				throw new Error('Cancelled');
 			}
 		} else if (resource.type === Status.DELETED_BY_US) {
-			const keepIt = localize('keep theirs', "Keep Their Version");
-			const deleteIt = localize('delete', "Delete File");
-			const result = await window.showInformationMessage(localize('deleted by us', "File '{0}' was deleted by us and modified by them.\n\nWhat would you like to do?", path.basename(uri.fsPath)), { modal: true }, keepIt, deleteIt);
+			const keepIt = l10n.t('Keep Their Version');
+			const deleteIt = l10n.t('Delete File');
+			const result = await window.showInformationMessage(l10n.t('File "{0}" was deleted by us and modified by them.\n\nWhat would you like to do?', path.basename(uri.fsPath)), { modal: true }, keepIt, deleteIt);
 
 			if (result === keepIt) {
 				await repository.add([uri]);
@@ -1035,10 +1656,10 @@ export class CommandCenter {
 
 		if (unresolved.length > 0) {
 			const message = unresolved.length > 1
-				? localize('confirm stage files with merge conflicts', "Are you sure you want to stage {0} files with merge conflicts?", merge.length)
-				: localize('confirm stage file with merge conflicts', "Are you sure you want to stage {0} with merge conflicts?", path.basename(merge[0].resourceUri.fsPath));
+				? l10n.t('Are you sure you want to stage {0} files with merge conflicts?', merge.length)
+				: l10n.t('Are you sure you want to stage {0} with merge conflicts?', path.basename(merge[0].resourceUri.fsPath));
 
-			const yes = localize('yes', "Yes");
+			const yes = l10n.t('Yes');
 			const pick = await window.showWarningMessage(message, { modal: true }, yes);
 
 			if (pick !== yes) {
@@ -1067,51 +1688,181 @@ export class CommandCenter {
 
 		await this._stageChanges(textEditor, [changes[index]]);
 
-		const firstStagedLine = changes[index].modifiedStartLineNumber - 1;
+		const firstStagedLine = changes[index].modifiedStartLineNumber;
 		textEditor.selections = [new Selection(firstStagedLine, 0, firstStagedLine, 0)];
 	}
 
-	@command('git.stageSelectedRanges', { diff: true })
-	async stageSelectedChanges(changes: LineChange[]): Promise<void> {
+	@command('git.diff.stageHunk')
+	async diffStageHunk(changes: DiffEditorSelectionHunkToolbarContext | undefined): Promise<void> {
+		if (changes) {
+			this.diffStageHunkOrSelection(changes);
+		} else {
+			await this.stageHunkAtCursor();
+		}
+	}
+
+	@command('git.diff.stageSelection')
+	async diffStageSelection(changes: DiffEditorSelectionHunkToolbarContext | undefined): Promise<void> {
+		this.diffStageHunkOrSelection(changes);
+	}
+
+	async diffStageHunkOrSelection(changes: DiffEditorSelectionHunkToolbarContext | undefined): Promise<void> {
+		if (!changes) {
+			return;
+		}
+
+		let modifiedUri = changes.modifiedUri;
+		let modifiedDocument: TextDocument | undefined;
+
+		if (!modifiedUri) {
+			const textEditor = window.activeTextEditor;
+			if (!textEditor) {
+				return;
+			}
+			modifiedDocument = textEditor.document;
+			modifiedUri = modifiedDocument.uri;
+		}
+
+		if (modifiedUri.scheme !== 'file') {
+			return;
+		}
+
+		if (!modifiedDocument) {
+			modifiedDocument = await workspace.openTextDocument(modifiedUri);
+		}
+
+		const result = changes.originalWithModifiedChanges;
+		await this.runByRepository(modifiedUri, async (repository, resource) =>
+			await repository.stage(resource, result, modifiedDocument.encoding));
+	}
+
+	private async stageHunkAtCursor(): Promise<void> {
 		const textEditor = window.activeTextEditor;
 
 		if (!textEditor) {
 			return;
 		}
 
+		const workingTreeDiffInformation = getWorkingTreeDiffInformation(textEditor);
+		if (!workingTreeDiffInformation) {
+			return;
+		}
+
+		const workingTreeLineChanges = toLineChanges(workingTreeDiffInformation);
+		const modifiedDocument = textEditor.document;
+		const cursorPosition = textEditor.selection.active;
+
+		// Find the hunk that contains the cursor position
+		const hunkAtCursor = workingTreeLineChanges.find(change => {
+			const hunkRange = getModifiedRange(modifiedDocument, change);
+			return hunkRange.contains(cursorPosition);
+		});
+
+		if (!hunkAtCursor) {
+			window.showInformationMessage(l10n.t('No hunk found at cursor position.'));
+			return;
+		}
+
+		await this._stageChanges(textEditor, [hunkAtCursor]);
+	}
+
+	@command('git.stageSelectedRanges')
+	async stageSelectedChanges(): Promise<void> {
+		const textEditor = window.activeTextEditor;
+
+		if (!textEditor) {
+			return;
+		}
+
+		const workingTreeDiffInformation = getWorkingTreeDiffInformation(textEditor);
+		if (!workingTreeDiffInformation) {
+			return;
+		}
+
+		const workingTreeLineChanges = toLineChanges(workingTreeDiffInformation);
+
+		this.logger.trace(`[CommandCenter][stageSelectedChanges] diffInformation: ${JSON.stringify(workingTreeDiffInformation)}`);
+		this.logger.trace(`[CommandCenter][stageSelectedChanges] diffInformation changes: ${JSON.stringify(workingTreeLineChanges)}`);
+
 		const modifiedDocument = textEditor.document;
 		const selectedLines = toLineRanges(textEditor.selections, modifiedDocument);
-		const selectedChanges = changes
-			.map(diff => selectedLines.reduce<LineChange | null>((result, range) => result || intersectDiffWithRange(modifiedDocument, diff, range), null))
+		const selectedChanges = workingTreeLineChanges
+			.map(change => selectedLines.reduce<LineChange | null>((result, range) => result || intersectDiffWithRange(modifiedDocument, change, range), null))
 			.filter(d => !!d) as LineChange[];
 
+		this.logger.trace(`[CommandCenter][stageSelectedChanges] selectedChanges: ${JSON.stringify(selectedChanges)}`);
+
 		if (!selectedChanges.length) {
+			window.showInformationMessage(l10n.t('The selection range does not contain any changes.'));
 			return;
 		}
 
 		await this._stageChanges(textEditor, selectedChanges);
 	}
 
-	@command('git.acceptMerge')
-	async acceptMerge(uri: Uri | unknown): Promise<void> {
-		if (!(uri instanceof Uri)) {
-			return;
-		}
-		const repository = this.model.getRepository(uri);
-		if (!repository) {
-			console.log(`FAILED to accept merge because uri ${uri.toString()} doesn't belong to any repository`);
+	@command('git.stageFile')
+	async stageFile(uri: Uri): Promise<void> {
+		uri = uri ?? window.activeTextEditor?.document.uri;
+
+		if (!uri) {
 			return;
 		}
 
+		const repository = this.model.getRepository(uri);
+		if (!repository) {
+			return;
+		}
+
+		const resources = [
+			...repository.workingTreeGroup.resourceStates,
+			...repository.untrackedGroup.resourceStates]
+			.filter(r => r.multiFileDiffEditorModifiedUri?.toString() === uri.toString() || r.multiDiffEditorOriginalUri?.toString() === uri.toString())
+			.map(r => r.resourceUri);
+
+		if (resources.length === 0) {
+			return;
+		}
+
+		await repository.add(resources);
+	}
+
+	@command('git.acceptMerge')
+	async acceptMerge(_uri: Uri | unknown): Promise<void> {
 		const { activeTab } = window.tabGroups.activeTabGroup;
 		if (!activeTab) {
 			return;
 		}
 
+		if (!(activeTab.input instanceof TabInputTextMerge)) {
+			return;
+		}
+
+		const uri = activeTab.input.result;
+
+		const repository = this.model.getRepository(uri);
+		if (!repository) {
+			console.log(`FAILED to complete merge because uri ${uri.toString()} doesn't belong to any repository`);
+			return;
+		}
+
+		const result = await commands.executeCommand('mergeEditor.acceptMerge') as { successful: boolean };
+		if (result.successful) {
+			await repository.add([uri]);
+			await commands.executeCommand('workbench.view.scm');
+		}
+
+		/*
+		if (!(uri instanceof Uri)) {
+			return;
+		}
+
+
+
+
 		// make sure to save the merged document
 		const doc = workspace.textDocuments.find(doc => doc.uri.toString() === uri.toString());
 		if (!doc) {
-			console.log(`FAILED to accept merge because uri ${uri.toString()} doesn't match a document`);
+			console.log(`FAILED to complete merge because uri ${uri.toString()} doesn't match a document`);
 			return;
 		}
 		if (doc.isDirty) {
@@ -1130,7 +1881,52 @@ export class CommandCenter {
 		if (didCloseTab) {
 			await repository.add([uri]);
 			await commands.executeCommand('workbench.view.scm');
+		}*/
+	}
+
+	@command('git.runGitMerge')
+	async runGitMergeNoDiff3(): Promise<void> {
+		await this.runGitMerge(false);
+	}
+
+	@command('git.runGitMergeDiff3')
+	async runGitMergeDiff3(): Promise<void> {
+		await this.runGitMerge(true);
+	}
+
+	private async runGitMerge(diff3: boolean): Promise<void> {
+		const { activeTab } = window.tabGroups.activeTabGroup;
+		if (!activeTab) {
+			return;
 		}
+
+		const input = activeTab.input;
+		if (!(input instanceof TabInputTextMerge)) {
+			return;
+		}
+
+		const result = await this.git.mergeFile({
+			basePath: input.base.fsPath,
+			input1Path: input.input1.fsPath,
+			input2Path: input.input2.fsPath,
+			diff3,
+		});
+
+		const doc = workspace.textDocuments.find(doc => doc.uri.toString() === input.result.toString());
+		if (!doc) {
+			return;
+		}
+		const e = new WorkspaceEdit();
+
+		e.replace(
+			input.result,
+			new Range(
+				new Position(0, 0),
+				new Position(doc.lineCount, 0),
+			),
+			result
+		);
+		await workspace.applyEdit(e);
 	}
 
 	private async _stageChanges(textEditor: TextEditor, changes: LineChange[]): Promise<void> {
@@ -1145,7 +1941,8 @@ export class CommandCenter {
 		const originalDocument = await workspace.openTextDocument(originalUri);
 		const result = applyLineChanges(originalDocument, modifiedDocument, changes);
 
-		await this.runByRepository(modifiedUri, async (repository, resource) => await repository.stage(resource, result));
+		await this.runByRepository(modifiedUri, async (repository, resource) =>
+			await repository.stage(resource, result, modifiedDocument.encoding));
 	}
 
 	@command('git.revertChange')
@@ -1162,28 +1959,41 @@ export class CommandCenter {
 
 		await this._revertChanges(textEditor, [...changes.slice(0, index), ...changes.slice(index + 1)]);
 
-		const firstStagedLine = changes[index].modifiedStartLineNumber - 1;
+		const firstStagedLine = changes[index].modifiedStartLineNumber;
 		textEditor.selections = [new Selection(firstStagedLine, 0, firstStagedLine, 0)];
 	}
 
-	@command('git.revertSelectedRanges', { diff: true })
-	async revertSelectedRanges(changes: LineChange[]): Promise<void> {
+	@command('git.revertSelectedRanges')
+	async revertSelectedRanges(): Promise<void> {
 		const textEditor = window.activeTextEditor;
 
 		if (!textEditor) {
 			return;
 		}
 
+		const workingTreeDiffInformation = getWorkingTreeDiffInformation(textEditor);
+		if (!workingTreeDiffInformation) {
+			return;
+		}
+
+		const workingTreeLineChanges = toLineChanges(workingTreeDiffInformation);
+
+		this.logger.trace(`[CommandCenter][revertSelectedRanges] diffInformation: ${JSON.stringify(workingTreeDiffInformation)}`);
+		this.logger.trace(`[CommandCenter][revertSelectedRanges] diffInformation changes: ${JSON.stringify(workingTreeLineChanges)}`);
+
 		const modifiedDocument = textEditor.document;
 		const selections = textEditor.selections;
-		const selectedChanges = changes.filter(change => {
+		const selectedChanges = workingTreeLineChanges.filter(change => {
 			const modifiedRange = getModifiedRange(modifiedDocument, change);
 			return selections.every(selection => !selection.intersection(modifiedRange));
 		});
 
-		if (selectedChanges.length === changes.length) {
+		if (selectedChanges.length === workingTreeLineChanges.length) {
+			window.showInformationMessage(l10n.t('The selection range does not contain any changes.'));
 			return;
 		}
+
+		this.logger.trace(`[CommandCenter][revertSelectedRanges] selectedChanges: ${JSON.stringify(selectedChanges)}`);
 
 		const selectionsBeforeRevert = textEditor.selections;
 		await this._revertChanges(textEditor, selectedChanges);
@@ -1242,8 +2052,8 @@ export class CommandCenter {
 		await repository.revert([]);
 	}
 
-	@command('git.unstageSelectedRanges', { diff: true })
-	async unstageSelectedRanges(diffs: LineChange[]): Promise<void> {
+	@command('git.unstageSelectedRanges')
+	async unstageSelectedRanges(): Promise<void> {
 		const textEditor = window.activeTextEditor;
 
 		if (!textEditor) {
@@ -1253,36 +2063,140 @@ export class CommandCenter {
 		const modifiedDocument = textEditor.document;
 		const modifiedUri = modifiedDocument.uri;
 
-		if (!isGitUri(modifiedUri)) {
+		const repository = this.model.getRepository(modifiedUri);
+		if (!repository) {
 			return;
 		}
 
-		const { ref } = fromGitUri(modifiedUri);
-
-		if (ref !== '') {
+		const resource = repository.indexGroup.resourceStates
+			.find(r => pathEquals(r.resourceUri.fsPath, modifiedUri.fsPath));
+		if (!resource) {
 			return;
 		}
+
+		const indexDiffInformation = getIndexDiffInformation(textEditor);
+		if (!indexDiffInformation) {
+			return;
+		}
+
+		const indexLineChanges = toLineChanges(indexDiffInformation);
+
+		this.logger.trace(`[CommandCenter][unstageSelectedRanges] diffInformation: ${JSON.stringify(indexDiffInformation)}`);
+		this.logger.trace(`[CommandCenter][unstageSelectedRanges] diffInformation changes: ${JSON.stringify(indexLineChanges)}`);
+
+		const originalUri = toGitUri(resource.original, 'HEAD');
+		const originalDocument = await workspace.openTextDocument(originalUri);
+		const selectedLines = toLineRanges(textEditor.selections, modifiedDocument);
+
+		const selectedDiffs = indexLineChanges
+			.map(change => selectedLines.reduce<LineChange | null>((result, range) => result || intersectDiffWithRange(modifiedDocument, change, range), null))
+			.filter(c => !!c) as LineChange[];
+
+		if (!selectedDiffs.length) {
+			window.showInformationMessage(l10n.t('The selection range does not contain any changes.'));
+			return;
+		}
+
+		this.logger.trace(`[CommandCenter][unstageSelectedRanges] selectedDiffs: ${JSON.stringify(selectedDiffs)}`);
+
+		// if (modifiedUri.scheme === 'file') {
+		// 	// Editor
+		// 	this.logger.trace(`[CommandCenter][unstageSelectedRanges] changes: ${JSON.stringify(selectedDiffs)}`);
+		// 	await this._unstageChanges(textEditor, selectedDiffs);
+		// 	return;
+		// }
+
+		const selectedDiffsInverted = selectedDiffs.map(invertLineChange);
+		this.logger.trace(`[CommandCenter][unstageSelectedRanges] selectedDiffsInverted: ${JSON.stringify(selectedDiffsInverted)}`);
+
+		const result = applyLineChanges(modifiedDocument, originalDocument, selectedDiffsInverted);
+		await repository.stage(modifiedDocument.uri, result, modifiedDocument.encoding);
+	}
+
+	@command('git.unstageFile')
+	async unstageFile(uri: Uri): Promise<void> {
+		uri = uri ?? window.activeTextEditor?.document.uri;
+
+		if (!uri) {
+			return;
+		}
+
+		const repository = this.model.getRepository(uri);
+		if (!repository) {
+			return;
+		}
+
+		const resources = repository.indexGroup.resourceStates
+			.filter(r => r.multiFileDiffEditorModifiedUri?.toString() === uri.toString() || r.multiDiffEditorOriginalUri?.toString() === uri.toString())
+			.map(r => r.resourceUri);
+
+		if (resources.length === 0) {
+			return;
+		}
+
+		await repository.revert(resources);
+	}
+
+	@command('git.unstageChange')
+	async unstageChange(uri: Uri, changes: LineChange[], index: number): Promise<void> {
+		if (!uri) {
+			return;
+		}
+
+		const textEditor = window.visibleTextEditors.filter(e => e.document.uri.toString() === uri.toString())[0];
+		if (!textEditor) {
+			return;
+		}
+
+		await this._unstageChanges(textEditor, [changes[index]]);
+	}
+
+	private async _unstageChanges(textEditor: TextEditor, changes: LineChange[]): Promise<void> {
+		const modifiedDocument = textEditor.document;
+		const modifiedUri = modifiedDocument.uri;
+
+		if (modifiedUri.scheme !== 'file') {
+			return;
+		}
+
+		const workingTreeDiffInformation = getWorkingTreeDiffInformation(textEditor);
+		if (!workingTreeDiffInformation) {
+			return;
+		}
+
+		// Approach to unstage change(s):
+		// - use file on disk as original document
+		// - revert all changes from the working tree
+		// - revert the specify change(s) from the index
+		const workingTreeDiffs = toLineChanges(workingTreeDiffInformation);
+		const workingTreeDiffsInverted = workingTreeDiffs.map(invertLineChange);
+		const changesInverted = changes.map(invertLineChange);
+		const diffsInverted = [...changesInverted, ...workingTreeDiffsInverted].sort(compareLineChanges);
 
 		const originalUri = toGitUri(modifiedUri, 'HEAD');
 		const originalDocument = await workspace.openTextDocument(originalUri);
-		const selectedLines = toLineRanges(textEditor.selections, modifiedDocument);
-		const selectedDiffs = diffs
-			.map(diff => selectedLines.reduce<LineChange | null>((result, range) => result || intersectDiffWithRange(modifiedDocument, diff, range), null))
-			.filter(d => !!d) as LineChange[];
+		const result = applyLineChanges(modifiedDocument, originalDocument, diffsInverted);
 
-		if (!selectedDiffs.length) {
-			return;
-		}
-
-		const invertedDiffs = selectedDiffs.map(invertLineChange);
-		const result = applyLineChanges(modifiedDocument, originalDocument, invertedDiffs);
-
-		await this.runByRepository(modifiedUri, async (repository, resource) => await repository.stage(resource, result));
+		await this.runByRepository(modifiedUri, async (repository, resource) =>
+			await repository.stage(resource, result, modifiedDocument.encoding));
 	}
 
 	@command('git.clean')
 	async clean(...resourceStates: SourceControlResourceState[]): Promise<void> {
-		resourceStates = resourceStates.filter(s => !!s);
+		// Remove duplicate resources
+		const resourceUris = new Set<string>();
+		resourceStates = resourceStates.filter(s => {
+			if (s === undefined) {
+				return false;
+			}
+
+			if (resourceUris.has(s.resourceUri.toString())) {
+				return false;
+			}
+
+			resourceUris.add(s.resourceUri.toString());
+			return true;
+		});
 
 		if (resourceStates.length === 0 || (resourceStates[0] && !(resourceStates[0].resourceUri instanceof Uri))) {
 			const resource = this.getSCMResource();
@@ -1301,84 +2215,12 @@ export class CommandCenter {
 			return;
 		}
 
-		const untrackedCount = scmResources.reduce((s, r) => s + (r.type === Status.UNTRACKED ? 1 : 0), 0);
-		let message: string;
-		let yes = localize('discard', "Discard Changes");
-
-		if (scmResources.length === 1) {
-			if (untrackedCount > 0) {
-				message = localize('confirm delete', "Are you sure you want to DELETE {0}?\nThis is IRREVERSIBLE!\nThis file will be FOREVER LOST if you proceed.", path.basename(scmResources[0].resourceUri.fsPath));
-				yes = localize('delete file', "Delete file");
-			} else {
-				if (scmResources[0].type === Status.DELETED) {
-					yes = localize('restore file', "Restore file");
-					message = localize('confirm restore', "Are you sure you want to restore {0}?", path.basename(scmResources[0].resourceUri.fsPath));
-				} else {
-					message = localize('confirm discard', "Are you sure you want to discard changes in {0}?", path.basename(scmResources[0].resourceUri.fsPath));
-				}
-			}
-		} else {
-			if (scmResources.every(resource => resource.type === Status.DELETED)) {
-				yes = localize('restore files', "Restore files");
-				message = localize('confirm restore multiple', "Are you sure you want to restore {0} files?", scmResources.length);
-			} else {
-				message = localize('confirm discard multiple', "Are you sure you want to discard changes in {0} files?", scmResources.length);
-			}
-
-			if (untrackedCount > 0) {
-				message = `${message}\n\n${localize('warn untracked', "This will DELETE {0} untracked files!\nThis is IRREVERSIBLE!\nThese files will be FOREVER LOST.", untrackedCount)}`;
-			}
-		}
-
-		const pick = await window.showWarningMessage(message, { modal: true }, yes);
-
-		if (pick !== yes) {
-			return;
-		}
-
-		const resources = scmResources.map(r => r.resourceUri);
-		await this.runByRepository(resources, async (repository, resources) => repository.clean(resources));
+		await this._cleanAll(scmResources);
 	}
 
 	@command('git.cleanAll', { repository: true })
 	async cleanAll(repository: Repository): Promise<void> {
-		let resources = repository.workingTreeGroup.resourceStates;
-
-		if (resources.length === 0) {
-			return;
-		}
-
-		const trackedResources = resources.filter(r => r.type !== Status.UNTRACKED && r.type !== Status.IGNORED);
-		const untrackedResources = resources.filter(r => r.type === Status.UNTRACKED || r.type === Status.IGNORED);
-
-		if (untrackedResources.length === 0) {
-			await this._cleanTrackedChanges(repository, resources);
-		} else if (resources.length === 1) {
-			await this._cleanUntrackedChange(repository, resources[0]);
-		} else if (trackedResources.length === 0) {
-			await this._cleanUntrackedChanges(repository, resources);
-		} else { // resources.length > 1 && untrackedResources.length > 0 && trackedResources.length > 0
-			const untrackedMessage = untrackedResources.length === 1
-				? localize('there are untracked files single', "The following untracked file will be DELETED FROM DISK if discarded: {0}.", path.basename(untrackedResources[0].resourceUri.fsPath))
-				: localize('there are untracked files', "There are {0} untracked files which will be DELETED FROM DISK if discarded.", untrackedResources.length);
-
-			const message = localize('confirm discard all 2', "{0}\n\nThis is IRREVERSIBLE, your current working set will be FOREVER LOST.", untrackedMessage, resources.length);
-
-			const yesTracked = trackedResources.length === 1
-				? localize('yes discard tracked', "Discard 1 Tracked File", trackedResources.length)
-				: localize('yes discard tracked multiple', "Discard {0} Tracked Files", trackedResources.length);
-
-			const yesAll = localize('discardAll', "Discard All {0} Files", resources.length);
-			const pick = await window.showWarningMessage(message, { modal: true }, yesTracked, yesAll);
-
-			if (pick === yesTracked) {
-				resources = trackedResources;
-			} else if (pick !== yesAll) {
-				return;
-			}
-
-			await repository.clean(resources.map(r => r.resourceUri));
-		}
+		await this._cleanAll(repository.workingTreeGroup.resourceStates);
 	}
 
 	@command('git.cleanAllTracked', { repository: true })
@@ -1390,7 +2232,7 @@ export class CommandCenter {
 			return;
 		}
 
-		await this._cleanTrackedChanges(repository, resources);
+		await this._cleanTrackedChanges(resources);
 	}
 
 	@command('git.cleanAllUntracked', { repository: true })
@@ -1402,135 +2244,215 @@ export class CommandCenter {
 			return;
 		}
 
-		if (resources.length === 1) {
-			await this._cleanUntrackedChange(repository, resources[0]);
+		await this._cleanUntrackedChanges(resources);
+	}
+
+	private async _cleanAll(resources: Resource[]): Promise<void> {
+		if (resources.length === 0) {
+			return;
+		}
+
+		const trackedResources = resources.filter(r => r.type !== Status.UNTRACKED && r.type !== Status.IGNORED);
+		const untrackedResources = resources.filter(r => r.type === Status.UNTRACKED || r.type === Status.IGNORED);
+
+		if (untrackedResources.length === 0) {
+			// Tracked files only
+			await this._cleanTrackedChanges(resources);
+		} else if (trackedResources.length === 0) {
+			// Untracked files only
+			await this._cleanUntrackedChanges(resources);
 		} else {
-			await this._cleanUntrackedChanges(repository, resources);
+			// Tracked & Untracked files
+			const [untrackedMessage, untrackedMessageDetail] = this.getDiscardUntrackedChangesDialogDetails(untrackedResources);
+
+			const trackedMessage = trackedResources.length === 1
+				? l10n.t('\n\nAre you sure you want to discard changes in \'{0}\'?', path.basename(trackedResources[0].resourceUri.fsPath))
+				: l10n.t('\n\nAre you sure you want to discard ALL changes in {0} files?', trackedResources.length);
+
+			const yesTracked = trackedResources.length === 1
+				? l10n.t('Discard 1 Tracked File')
+				: l10n.t('Discard All {0} Tracked Files', trackedResources.length);
+
+			const yesAll = l10n.t('Discard All {0} Files', resources.length);
+			const pick = await window.showWarningMessage(`${untrackedMessage} ${untrackedMessageDetail}${trackedMessage}\n\nThis is IRREVERSIBLE!\nYour current working set will be FOREVER LOST if you proceed.`, { modal: true }, yesTracked, yesAll);
+
+			if (pick === yesTracked) {
+				resources = trackedResources;
+			} else if (pick !== yesAll) {
+				return;
+			}
+
+			const resourceUris = resources.map(r => r.resourceUri);
+			await this.runByRepository(resourceUris, async (repository, resources) => repository.clean(resources));
 		}
 	}
 
-	private async _cleanTrackedChanges(repository: Repository, resources: Resource[]): Promise<void> {
+	private async _cleanTrackedChanges(resources: Resource[]): Promise<void> {
+		const allResourcesDeleted = resources.every(r => r.type === Status.DELETED);
+
+		const message = allResourcesDeleted
+			? resources.length === 1
+				? l10n.t('Are you sure you want to restore \'{0}\'?', path.basename(resources[0].resourceUri.fsPath))
+				: l10n.t('Are you sure you want to restore ALL {0} files?', resources.length)
+			: resources.length === 1
+				? l10n.t('Are you sure you want to discard changes in \'{0}\'?', path.basename(resources[0].resourceUri.fsPath))
+				: l10n.t('Are you sure you want to discard ALL changes in {0} files?\n\nThis is IRREVERSIBLE!\nYour current working set will be FOREVER LOST if you proceed.', resources.length);
+
+		const yes = allResourcesDeleted
+			? resources.length === 1
+				? l10n.t('Restore File')
+				: l10n.t('Restore All {0} Files', resources.length)
+			: resources.length === 1
+				? l10n.t('Discard File')
+				: l10n.t('Discard All {0} Files', resources.length);
+
+		const pick = await window.showWarningMessage(message, { modal: true }, yes);
+
+		if (pick !== yes) {
+			return;
+		}
+
+		const resourceUris = resources.map(r => r.resourceUri);
+		await this.runByRepository(resourceUris, async (repository, resources) => repository.clean(resources));
+	}
+
+	private async _cleanUntrackedChanges(resources: Resource[]): Promise<void> {
+		const [message, messageDetail, primaryAction] = this.getDiscardUntrackedChangesDialogDetails(resources);
+		const pick = await window.showWarningMessage(message, { detail: messageDetail, modal: true }, primaryAction);
+
+		if (pick !== primaryAction) {
+			return;
+		}
+
+		const resourceUris = resources.map(r => r.resourceUri);
+		await this.runByRepository(resourceUris, async (repository, resources) => repository.clean(resources));
+	}
+
+	private getDiscardUntrackedChangesDialogDetails(resources: Resource[]): [string, string, string] {
+		const config = workspace.getConfiguration('git');
+		const discardUntrackedChangesToTrash = config.get<boolean>('discardUntrackedChangesToTrash', true) && !isRemote && !isLinuxSnap;
+
+		const messageWarning = !discardUntrackedChangesToTrash
+			? resources.length === 1
+				? '\n\n' + l10n.t('This is IRREVERSIBLE!\nThis file will be FOREVER LOST if you proceed.')
+				: '\n\n' + l10n.t('This is IRREVERSIBLE!\nThese files will be FOREVER LOST if you proceed.')
+			: '';
+
 		const message = resources.length === 1
-			? localize('confirm discard all single', "Are you sure you want to discard changes in {0}?", path.basename(resources[0].resourceUri.fsPath))
-			: localize('confirm discard all', "Are you sure you want to discard ALL changes in {0} files?\nThis is IRREVERSIBLE!\nYour current working set will be FOREVER LOST if you proceed.", resources.length);
-		const yes = resources.length === 1
-			? localize('discardAll multiple', "Discard 1 File")
-			: localize('discardAll', "Discard All {0} Files", resources.length);
-		const pick = await window.showWarningMessage(message, { modal: true }, yes);
+			? l10n.t('Are you sure you want to DELETE the following untracked file: \'{0}\'?{1}', path.basename(resources[0].resourceUri.fsPath), messageWarning)
+			: l10n.t('Are you sure you want to DELETE the {0} untracked files?{1}', resources.length, messageWarning);
 
-		if (pick !== yes) {
-			return;
-		}
+		const messageDetail = discardUntrackedChangesToTrash
+			? isWindows
+				? resources.length === 1
+					? l10n.t('You can restore this file from the Recycle Bin.')
+					: l10n.t('You can restore these files from the Recycle Bin.')
+				: resources.length === 1
+					? l10n.t('You can restore this file from the Trash.')
+					: l10n.t('You can restore these files from the Trash.')
+			: '';
 
-		await repository.clean(resources.map(r => r.resourceUri));
-	}
+		const primaryAction = discardUntrackedChangesToTrash
+			? isWindows
+				? l10n.t('Move to Recycle Bin')
+				: l10n.t('Move to Trash')
+			: resources.length === 1
+				? l10n.t('Delete File')
+				: l10n.t('Delete All {0} Files', resources.length);
 
-	private async _cleanUntrackedChange(repository: Repository, resource: Resource): Promise<void> {
-		const message = localize('confirm delete', "Are you sure you want to DELETE {0}?\nThis is IRREVERSIBLE!\nThis file will be FOREVER LOST if you proceed.", path.basename(resource.resourceUri.fsPath));
-		const yes = localize('delete file', "Delete file");
-		const pick = await window.showWarningMessage(message, { modal: true }, yes);
-
-		if (pick !== yes) {
-			return;
-		}
-
-		await repository.clean([resource.resourceUri]);
-	}
-
-	private async _cleanUntrackedChanges(repository: Repository, resources: Resource[]): Promise<void> {
-		const message = localize('confirm delete multiple', "Are you sure you want to DELETE {0} files?\nThis is IRREVERSIBLE!\nThese files will be FOREVER LOST if you proceed.", resources.length);
-		const yes = localize('delete files', "Delete Files");
-		const pick = await window.showWarningMessage(message, { modal: true }, yes);
-
-		if (pick !== yes) {
-			return;
-		}
-
-		await repository.clean(resources.map(r => r.resourceUri));
+		return [message, messageDetail, primaryAction];
 	}
 
 	private async smartCommit(
 		repository: Repository,
 		getCommitMessage: () => Promise<string | undefined>,
 		opts: CommitOptions
-	): Promise<boolean> {
+	): Promise<void> {
 		const config = workspace.getConfiguration('git', Uri.file(repository.root));
 		let promptToSaveFilesBeforeCommit = config.get<'always' | 'staged' | 'never'>('promptToSaveFilesBeforeCommit');
 
 		// migration
-		if (promptToSaveFilesBeforeCommit as any === true) {
-			promptToSaveFilesBeforeCommit = 'always';
-		} else if (promptToSaveFilesBeforeCommit as any === false) {
-			promptToSaveFilesBeforeCommit = 'never';
+		if (typeof promptToSaveFilesBeforeCommit === 'boolean') {
+			promptToSaveFilesBeforeCommit = promptToSaveFilesBeforeCommit ? 'always' : 'never';
 		}
 
-		const enableSmartCommit = config.get<boolean>('enableSmartCommit') === true;
-		const enableCommitSigning = config.get<boolean>('enableCommitSigning') === true;
+		let enableSmartCommit = config.get<boolean>('enableSmartCommit') === true;
 		let noStagedChanges = repository.indexGroup.resourceStates.length === 0;
 		let noUnstagedChanges = repository.workingTreeGroup.resourceStates.length === 0;
 
-		if (promptToSaveFilesBeforeCommit !== 'never') {
-			let documents = workspace.textDocuments
-				.filter(d => !d.isUntitled && d.isDirty && isDescendant(repository.root, d.uri.fsPath));
+		if (!opts.empty) {
+			if (promptToSaveFilesBeforeCommit !== 'never') {
+				let documents = workspace.textDocuments
+					.filter(d => !d.isUntitled && d.isDirty && isDescendant(repository.root, d.uri.fsPath));
 
-			if (promptToSaveFilesBeforeCommit === 'staged' || repository.indexGroup.resourceStates.length > 0) {
-				documents = documents
-					.filter(d => repository.indexGroup.resourceStates.some(s => pathEquals(s.resourceUri.fsPath, d.uri.fsPath)));
-			}
+				if (promptToSaveFilesBeforeCommit === 'staged' || repository.indexGroup.resourceStates.length > 0) {
+					documents = documents
+						.filter(d => repository.indexGroup.resourceStates.some(s => pathEquals(s.resourceUri.fsPath, d.uri.fsPath)));
+				}
 
-			if (documents.length > 0) {
-				const message = documents.length === 1
-					? localize('unsaved files single', "The following file has unsaved changes which won't be included in the commit if you proceed: {0}.\n\nWould you like to save it before committing?", path.basename(documents[0].uri.fsPath))
-					: localize('unsaved files', "There are {0} unsaved files.\n\nWould you like to save them before committing?", documents.length);
-				const saveAndCommit = localize('save and commit', "Save All & Commit");
-				const commit = localize('commit', "Commit Staged Changes");
-				const pick = await window.showWarningMessage(message, { modal: true }, saveAndCommit, commit);
+				if (documents.length > 0) {
+					const message = documents.length === 1
+						? l10n.t('The following file has unsaved changes which won\'t be included in the commit if you proceed: {0}.\n\nWould you like to save it before committing?', path.basename(documents[0].uri.fsPath))
+						: l10n.t('There are {0} unsaved files.\n\nWould you like to save them before committing?', documents.length);
+					const saveAndCommit = l10n.t('Save All & Commit Changes');
+					const commit = l10n.t('Commit Changes');
+					const pick = await window.showWarningMessage(message, { modal: true }, saveAndCommit, commit);
 
-				if (pick === saveAndCommit) {
-					await Promise.all(documents.map(d => d.save()));
-					await repository.add(documents.map(d => d.uri));
+					if (pick === saveAndCommit) {
+						await Promise.all(documents.map(d => d.save()));
 
-					noStagedChanges = repository.indexGroup.resourceStates.length === 0;
-					noUnstagedChanges = repository.workingTreeGroup.resourceStates.length === 0;
-				} else if (pick !== commit) {
-					return false; // do not commit on cancel
+						// After saving the dirty documents, if there are any documents that are part of the
+						// index group we have to add them back in order for the saved changes to be committed
+						documents = documents
+							.filter(d => repository.indexGroup.resourceStates.some(s => pathEquals(s.resourceUri.fsPath, d.uri.fsPath)));
+						await repository.add(documents.map(d => d.uri));
+
+						noStagedChanges = repository.indexGroup.resourceStates.length === 0;
+						noUnstagedChanges = repository.workingTreeGroup.resourceStates.length === 0;
+					} else if (pick !== commit) {
+						return; // do not commit on cancel
+					}
 				}
 			}
-		}
 
-		// no changes, and the user has not configured to commit all in this case
-		if (!noUnstagedChanges && noStagedChanges && !enableSmartCommit && !opts.empty && !opts.all) {
-			const suggestSmartCommit = config.get<boolean>('suggestSmartCommit') === true;
+			// no changes, and the user has not configured to commit all in this case
+			if (!noUnstagedChanges && noStagedChanges && !enableSmartCommit && !opts.all && !opts.amend) {
+				const suggestSmartCommit = config.get<boolean>('suggestSmartCommit') === true;
 
-			if (!suggestSmartCommit) {
-				return false;
+				if (!suggestSmartCommit) {
+					return;
+				}
+
+				// prompt the user if we want to commit all or not
+				const message = l10n.t('There are no staged changes to commit.\n\nWould you like to stage all your changes and commit them directly?');
+				const yes = l10n.t('Yes');
+				const always = l10n.t('Always');
+				const never = l10n.t('Never');
+				const pick = await window.showWarningMessage(message, { modal: true }, yes, always, never);
+
+				if (pick === always) {
+					enableSmartCommit = true;
+					config.update('enableSmartCommit', true, true);
+				} else if (pick === never) {
+					config.update('suggestSmartCommit', false, true);
+					return;
+				} else if (pick === yes) {
+					enableSmartCommit = true;
+				} else {
+					// Cancel
+					return;
+				}
 			}
 
-			// prompt the user if we want to commit all or not
-			const message = localize('no staged changes', "There are no staged changes to commit.\n\nWould you like to stage all your changes and commit them directly?");
-			const yes = localize('yes', "Yes");
-			const always = localize('always', "Always");
-			const never = localize('never', "Never");
-			const pick = await window.showWarningMessage(message, { modal: true }, yes, always, never);
-
-			if (pick === always) {
-				config.update('enableSmartCommit', true, true);
-			} else if (pick === never) {
-				config.update('suggestSmartCommit', false, true);
-				return false;
-			} else if (pick !== yes) {
-				return false; // do not commit on cancel
+			// smart commit
+			if (enableSmartCommit && !opts.all) {
+				opts = { ...opts, all: noStagedChanges };
 			}
 		}
 
-		if (opts.all === undefined) {
-			opts = { all: noStagedChanges };
-		} else if (!opts.all && noStagedChanges && !opts.empty) {
-			opts = { ...opts, all: true };
-		}
-
-		// enable signing of commits if configured
-		opts.signCommit = enableCommitSigning;
+		// Enable signing of commits if the setting is enabled. If the setting is not enabled,
+		// we set the option to undefined so that we let git use the repository/global config.
+		opts.signCommit = config.get<boolean>('enableCommitSigning') === true ? true : undefined;
 
 		if (config.get<boolean>('alwaysSignOff')) {
 			opts.signoff = true;
@@ -1558,12 +2480,16 @@ export class CommandCenter {
 			// amend allows changing only the commit message
 			&& !opts.amend
 			&& !opts.empty
+			// merge not in progress
+			&& !repository.mergeInProgress
+			// rebase not in progress
+			&& repository.rebaseCommit === undefined
 		) {
-			const commitAnyway = localize('commit anyway', "Create Empty Commit");
-			const answer = await window.showInformationMessage(localize('no changes', "There are no changes to commit."), commitAnyway);
+			const commitAnyway = l10n.t('Create Empty Commit');
+			const answer = await window.showInformationMessage(l10n.t('There are no changes to commit.'), commitAnyway);
 
 			if (answer !== commitAnyway) {
-				return false;
+				return;
 			}
 
 			opts.empty = true;
@@ -1571,20 +2497,20 @@ export class CommandCenter {
 
 		if (opts.noVerify) {
 			if (!config.get<boolean>('allowNoVerifyCommit')) {
-				await window.showErrorMessage(localize('no verify commit not allowed', "Commits without verification are not allowed, please enable them with the 'git.allowNoVerifyCommit' setting."));
-				return false;
+				await window.showErrorMessage(l10n.t('Commits without verification are not allowed, please enable them with the "git.allowNoVerifyCommit" setting.'));
+				return;
 			}
 
 			if (config.get<boolean>('confirmNoVerifyCommit')) {
-				const message = localize('confirm no verify commit', "You are about to commit your changes without verification, this skips pre-commit hooks and can be undesirable.\n\nAre you sure to continue?");
-				const yes = localize('ok', "OK");
-				const neverAgain = localize('never ask again', "OK, Don't Ask Again");
+				const message = l10n.t('You are about to commit your changes without verification, this skips pre-commit hooks and can be undesirable.\n\nAre you sure to continue?');
+				const yes = l10n.t('OK');
+				const neverAgain = l10n.t('OK, Don\'t Ask Again');
 				const pick = await window.showWarningMessage(message, { modal: true }, yes, neverAgain);
 
 				if (pick === neverAgain) {
 					config.update('confirmNoVerifyCommit', false, true);
 				} else if (pick !== yes) {
-					return false;
+					return;
 				}
 			}
 		}
@@ -1592,7 +2518,7 @@ export class CommandCenter {
 		const message = await getCommitMessage();
 
 		if (!message && !opts.amend && !opts.useEditor) {
-			return false;
+			return;
 		}
 
 		if (opts.all && smartCommitChanges === 'tracked') {
@@ -1603,27 +2529,33 @@ export class CommandCenter {
 			opts.all = 'tracked';
 		}
 
-		// Branch protection
+		// Diagnostics commit hook
+		const diagnosticsResult = await evaluateDiagnosticsCommitHook(repository, opts, this.logger);
+		if (!diagnosticsResult) {
+			return;
+		}
+
+		// Branch protection commit hook
 		const branchProtectionPrompt = config.get<'alwaysCommit' | 'alwaysCommitToNewBranch' | 'alwaysPrompt'>('branchProtectionPrompt')!;
 		if (repository.isBranchProtected() && (branchProtectionPrompt === 'alwaysPrompt' || branchProtectionPrompt === 'alwaysCommitToNewBranch')) {
-			const commitToNewBranch = localize('commit to branch', "Commit to a New Branch");
+			const commitToNewBranch = l10n.t('Commit to a New Branch');
 
 			let pick: string | undefined = commitToNewBranch;
 
 			if (branchProtectionPrompt === 'alwaysPrompt') {
-				const message = localize('confirm branch protection commit', "You are trying to commit to a protected branch and you might not have permission to push your commits to the remote.\n\nHow would you like to proceed?");
-				const commit = localize('commit changes', "Commit Anyway");
+				const message = l10n.t('You are trying to commit to a protected branch. How would you like to proceed?');
+				const commit = l10n.t('Commit Anyway');
 
 				pick = await window.showWarningMessage(message, { modal: true }, commitToNewBranch, commit);
 			}
 
 			if (!pick) {
-				return false;
+				return;
 			} else if (pick === commitToNewBranch) {
 				const branchName = await this.promptForBranchName(repository);
 
 				if (!branchName) {
-					return false;
+					return;
 				}
 
 				await repository.branch(branchName, true);
@@ -1631,15 +2563,6 @@ export class CommandCenter {
 		}
 
 		await repository.commit(message, opts);
-
-		// Execute post commit command
-		if (opts.postCommitCommand?.length) {
-			await commands.executeCommand(
-				opts.postCommitCommand,
-				new ApiRepository(repository));
-		}
-
-		return true;
 	}
 
 	private async commitWithAnyInput(repository: Repository, opts: CommitOptions): Promise<void> {
@@ -1661,15 +2584,15 @@ export class CommandCenter {
 				let placeHolder: string;
 
 				if (branchName) {
-					placeHolder = localize('commitMessageWithHeadLabel2', "Message (commit on '{0}')", branchName);
+					placeHolder = l10n.t('Message (commit on "{0}")', branchName);
 				} else {
-					placeHolder = localize('commit message', "Commit message");
+					placeHolder = l10n.t('Commit message');
 				}
 
 				_message = await window.showInputBox({
 					value,
 					placeHolder,
-					prompt: localize('provide commit message', "Please provide a commit message"),
+					prompt: l10n.t('Please provide a commit message'),
 					ignoreFocusOut: true
 				});
 			}
@@ -1677,16 +2600,22 @@ export class CommandCenter {
 			return _message;
 		};
 
-		const didCommit = await this.smartCommit(repository, getCommitMessage, opts);
-
-		if (message && didCommit) {
-			repository.inputBox.value = await repository.getInputTemplate();
-		}
+		await this.smartCommit(repository, getCommitMessage, opts);
 	}
 
 	@command('git.commit', { repository: true })
-	async commit(repository: Repository, postCommitCommand?: string): Promise<void> {
+	async commit(repository: Repository, postCommitCommand?: string | null): Promise<void> {
 		await this.commitWithAnyInput(repository, { postCommitCommand });
+	}
+
+	@command('git.commitAmend', { repository: true })
+	async commitAmend(repository: Repository): Promise<void> {
+		await this.commitWithAnyInput(repository, { amend: true });
+	}
+
+	@command('git.commitSigned', { repository: true })
+	async commitSigned(repository: Repository): Promise<void> {
+		await this.commitWithAnyInput(repository, { signoff: true });
 	}
 
 	@command('git.commitStaged', { repository: true })
@@ -1721,7 +2650,8 @@ export class CommandCenter {
 
 	@command('git.commitMessageAccept')
 	async commitMessageAccept(arg?: Uri): Promise<void> {
-		if (!arg) { return; }
+		if (!arg && !window.activeTextEditor) { return; }
+		arg ??= window.activeTextEditor!.document.uri;
 
 		// Close the tab
 		this._closeEditorTab(arg);
@@ -1729,11 +2659,12 @@ export class CommandCenter {
 
 	@command('git.commitMessageDiscard')
 	async commitMessageDiscard(arg?: Uri): Promise<void> {
-		if (!arg) { return; }
+		if (!arg && !window.activeTextEditor) { return; }
+		arg ??= window.activeTextEditor!.document.uri;
 
 		// Clear the contents of the editor
 		const editors = window.visibleTextEditors
-			.filter(e => e.document.languageId === 'git-commit' && e.document.uri.toString() === arg.toString());
+			.filter(e => e.document.languageId === 'git-commit' && e.document.uri.toString() === arg!.toString());
 
 		if (editors.length !== 1) { return; }
 
@@ -1770,9 +2701,9 @@ export class CommandCenter {
 		const shouldPrompt = config.get<boolean>('confirmEmptyCommits') === true;
 
 		if (shouldPrompt) {
-			const message = localize('confirm emtpy commit', "Are you sure you want to create an empty commit?");
-			const yes = localize('yes', "Yes");
-			const neverAgain = localize('yes never again', "Yes, Don't Show Again");
+			const message = l10n.t('Are you sure you want to create an empty commit?');
+			const yes = l10n.t('Yes');
+			const neverAgain = l10n.t('Yes, Don\'t Show Again');
 			const pick = await window.showWarningMessage(message, { modal: true }, yes, neverAgain);
 
 			if (pick === neverAgain) {
@@ -1803,6 +2734,16 @@ export class CommandCenter {
 	@command('git.commitStagedSignedNoVerify', { repository: true })
 	async commitStagedSignedNoVerify(repository: Repository): Promise<void> {
 		await this.commitWithAnyInput(repository, { all: false, signoff: true, noVerify: true });
+	}
+
+	@command('git.commitAmendNoVerify', { repository: true })
+	async commitAmendNoVerify(repository: Repository): Promise<void> {
+		await this.commitWithAnyInput(repository, { amend: true, noVerify: true });
+	}
+
+	@command('git.commitSignedNoVerify', { repository: true })
+	async commitSignedNoVerify(repository: Repository): Promise<void> {
+		await this.commitWithAnyInput(repository, { signoff: true, noVerify: true });
 	}
 
 	@command('git.commitStagedAmendNoVerify', { repository: true })
@@ -1840,15 +2781,15 @@ export class CommandCenter {
 		const HEAD = repository.HEAD;
 
 		if (!HEAD || !HEAD.commit) {
-			window.showWarningMessage(localize('no more', "Can't undo because HEAD doesn't point to any commit."));
+			window.showWarningMessage(l10n.t('Can\'t undo because HEAD doesn\'t point to any commit.'));
 			return;
 		}
 
 		const commit = await repository.getCommit('HEAD');
 
 		if (commit.parents.length > 1) {
-			const yes = localize('undo commit', "Undo merge commit");
-			const result = await window.showWarningMessage(localize('merge commit', "The last commit was a merge commit. Are you sure you want to undo it?"), { modal: true }, yes);
+			const yes = l10n.t('Undo merge commit');
+			const result = await window.showWarningMessage(l10n.t('The last commit was a merge commit. Are you sure you want to undo it?'), { modal: true }, yes);
 
 			if (result !== yes) {
 				return;
@@ -1870,9 +2811,42 @@ export class CommandCenter {
 		return this._checkout(repository, { treeish });
 	}
 
+	@command('git.graph.checkout', { repository: true })
+	async checkout2(repository: Repository, historyItem?: SourceControlHistoryItem, historyItemRefId?: string): Promise<void> {
+		const historyItemRef = historyItem?.references?.find(r => r.id === historyItemRefId);
+		if (!historyItemRef) {
+			return;
+		}
+
+		const config = workspace.getConfiguration('git', Uri.file(repository.root));
+		const pullBeforeCheckout = config.get<boolean>('pullBeforeCheckout', false) === true;
+
+		// Branch, tag
+		if (historyItemRef.id.startsWith('refs/heads/') || historyItemRef.id.startsWith('refs/tags/')) {
+			await repository.checkout(historyItemRef.name, { pullBeforeCheckout });
+			return;
+		}
+
+		// Remote branch
+		const branches = await repository.findTrackingBranches(historyItemRef.name);
+		if (branches.length > 0) {
+			await repository.checkout(branches[0].name!, { pullBeforeCheckout });
+		} else {
+			await repository.checkoutTracking(historyItemRef.name);
+		}
+	}
+
 	@command('git.checkoutDetached', { repository: true })
 	async checkoutDetached(repository: Repository, treeish?: string): Promise<boolean> {
 		return this._checkout(repository, { detached: true, treeish });
+	}
+
+	@command('git.graph.checkoutDetached', { repository: true })
+	async checkoutDetached2(repository: Repository, historyItem?: SourceControlHistoryItem): Promise<boolean> {
+		if (!historyItem) {
+			return false;
+		}
+		return this._checkout(repository, { detached: true, treeish: historyItem.id });
 	}
 
 	private async _checkout(repository: Repository, opts?: { detached?: boolean; treeish?: string }): Promise<boolean> {
@@ -1885,55 +2859,121 @@ export class CommandCenter {
 		const createBranchFrom = new CreateBranchFromItem();
 		const checkoutDetached = new CheckoutDetachedItem();
 		const picks: QuickPickItem[] = [];
+		const commands: QuickPickItem[] = [];
 
 		if (!opts?.detached) {
-			picks.push(createBranch, createBranchFrom, checkoutDetached);
+			commands.push(createBranch, createBranchFrom, checkoutDetached);
 		}
 
-		picks.push(...createCheckoutItems(repository));
+		const disposables: Disposable[] = [];
+		const quickPick = window.createQuickPick();
+		quickPick.busy = true;
+		quickPick.sortByLabel = false;
+		quickPick.matchOnDetail = false;
+		quickPick.placeholder = opts?.detached
+			? l10n.t('Select a branch to checkout in detached mode')
+			: l10n.t('Select a branch or tag to checkout');
 
-		const quickpick = window.createQuickPick();
-		quickpick.items = picks;
-		quickpick.placeholder = opts?.detached
-			? localize('select a ref to checkout detached', 'Select a ref to checkout in detached mode')
-			: localize('select a ref to checkout', 'Select a ref to checkout');
+		quickPick.show();
+		picks.push(... await createCheckoutItems(repository, opts?.detached));
 
-		quickpick.show();
+		const setQuickPickItems = () => {
+			switch (true) {
+				case quickPick.value === '':
+					quickPick.items = [...commands, ...picks];
+					break;
+				case commands.length === 0:
+					quickPick.items = picks;
+					break;
+				case picks.length === 0:
+					quickPick.items = commands;
+					break;
+				default:
+					quickPick.items = [...picks, { label: '', kind: QuickPickItemKind.Separator }, ...commands];
+					break;
+			}
+		};
 
-		const choice = await new Promise<QuickPickItem | undefined>(c => quickpick.onDidAccept(() => c(quickpick.activeItems[0])));
-		quickpick.hide();
+		setQuickPickItems();
+		quickPick.busy = false;
+
+		const choice = await new Promise<QuickPickItem | undefined>(c => {
+			disposables.push(quickPick.onDidHide(() => c(undefined)));
+			disposables.push(quickPick.onDidAccept(() => c(quickPick.activeItems[0])));
+			disposables.push((quickPick.onDidTriggerItemButton((e) => {
+				const button = e.button as QuickInputButton & { actual: RemoteSourceAction };
+				const item = e.item as CheckoutItem;
+				if (button.actual && item.refName) {
+					button.actual.run(item.refRemote ? item.refName.substring(item.refRemote.length + 1) : item.refName);
+				}
+
+				c(undefined);
+			})));
+			disposables.push(quickPick.onDidChangeValue(() => setQuickPickItems()));
+		});
+
+		dispose(disposables);
+		quickPick.dispose();
 
 		if (!choice) {
 			return false;
 		}
 
 		if (choice === createBranch) {
-			await this._branch(repository, quickpick.value);
+			await this._branch(repository, quickPick.value);
 		} else if (choice === createBranchFrom) {
-			await this._branch(repository, quickpick.value, true);
+			await this._branch(repository, quickPick.value, true);
 		} else if (choice === checkoutDetached) {
 			return this._checkout(repository, { detached: true });
 		} else {
 			const item = choice as CheckoutItem;
 
 			try {
-				await item.run(opts);
+				await item.run(repository, opts);
 			} catch (err) {
-				if (err.gitErrorCode !== GitErrorCodes.DirtyWorkTree) {
+				if (err.gitErrorCode !== GitErrorCodes.DirtyWorkTree && err.gitErrorCode !== GitErrorCodes.WorktreeBranchAlreadyUsed) {
 					throw err;
 				}
 
-				const force = localize('force', "Force Checkout");
-				const stash = localize('stashcheckout', "Stash & Checkout");
-				const choice = await window.showWarningMessage(localize('local changes', "Your local changes would be overwritten by checkout."), { modal: true }, force, stash);
+				if (err.gitErrorCode === GitErrorCodes.WorktreeBranchAlreadyUsed) {
+					// Not checking out in a worktree (use standard error handling)
+					if (!repository.dotGit.commonPath) {
+						await this.handleWorktreeBranchAlreadyUsed(err);
+						return false;
+					}
+
+					// Check out in a worktree (check if worktree's main repository is open in workspace and if branch is already checked out in main repository)
+					const commonPath = path.dirname(repository.dotGit.commonPath);
+					if (workspace.workspaceFolders && workspace.workspaceFolders.some(folder => pathEquals(folder.uri.fsPath, commonPath))) {
+						const mainRepository = this.model.getRepository(commonPath);
+						if (mainRepository && item.refName && item.refName.replace(`${item.refRemote}/`, '') === mainRepository.HEAD?.name) {
+							const message = l10n.t('Branch "{0}" is already checked out in the current window.', item.refName);
+							await window.showErrorMessage(message, { modal: true });
+							return false;
+						}
+					}
+
+					// Check out in a worktree, (branch is already checked out in existing worktree)
+					await this.handleWorktreeBranchAlreadyUsed(err);
+					return false;
+				}
+
+				const stash = l10n.t('Stash & Checkout');
+				const migrate = l10n.t('Migrate Changes');
+				const force = l10n.t('Force Checkout');
+				const choice = await window.showWarningMessage(l10n.t('Your local changes would be overwritten by checkout.'), { modal: true }, stash, migrate, force);
 
 				if (choice === force) {
 					await this.cleanAll(repository);
-					await item.run(opts);
-				} else if (choice === stash) {
-					await this.stash(repository);
-					await item.run(opts);
-					await this.stashPopLatest(repository);
+					await item.run(repository, opts);
+				} else if (choice === stash || choice === migrate) {
+					if (await this._stash(repository, true)) {
+						await item.run(repository, opts);
+
+						if (choice === migrate) {
+							await this.stashPopLatest(repository);
+						}
+					}
 				}
 			}
 		}
@@ -1942,8 +2982,8 @@ export class CommandCenter {
 	}
 
 	@command('git.branch', { repository: true })
-	async branch(repository: Repository): Promise<void> {
-		await this._branch(repository);
+	async branch(repository: Repository, historyItem?: SourceControlHistoryItem): Promise<void> {
+		await this._branch(repository, undefined, false, historyItem?.id);
 	}
 
 	@command('git.branchFrom', { repository: true })
@@ -1951,153 +2991,351 @@ export class CommandCenter {
 		await this._branch(repository, undefined, true);
 	}
 
-	private generateRandomBranchName(repository: Repository, separator: string): string {
-		const config = workspace.getConfiguration('git');
-		const branchRandomNameDictionary = config.get<string[]>('branchRandomName.dictionary')!;
-
-		const dictionaries: string[][] = [];
-		for (const dictionary of branchRandomNameDictionary) {
-			if (dictionary.toLowerCase() === 'adjectives') {
-				dictionaries.push(adjectives);
-			}
-			if (dictionary.toLowerCase() === 'animals') {
-				dictionaries.push(animals);
-			}
-			if (dictionary.toLowerCase() === 'colors') {
-				dictionaries.push(colors);
-			}
-			if (dictionary.toLowerCase() === 'numbers') {
-				dictionaries.push(NumberDictionary.generate({ length: 3 }));
-			}
-		}
-
-		if (dictionaries.length === 0) {
-			return '';
-		}
-
-		// 5 attempts to generate a random branch name
-		for (let index = 0; index < 5; index++) {
-			const randomName = uniqueNamesGenerator({
-				dictionaries,
-				length: dictionaries.length,
-				separator
-			});
-
-			// Check for local ref conflict
-			if (!repository.refs.find(r => r.type === RefType.Head && r.name === randomName)) {
-				return randomName;
-			}
-		}
-
-		return '';
-	}
-
 	private async promptForBranchName(repository: Repository, defaultName?: string, initialValue?: string): Promise<string> {
 		const config = workspace.getConfiguration('git');
 		const branchPrefix = config.get<string>('branchPrefix')!;
 		const branchWhitespaceChar = config.get<string>('branchWhitespaceChar')!;
 		const branchValidationRegex = config.get<string>('branchValidationRegex')!;
-		const sanitize = (name: string) => name ?
-			name.trim().replace(/^-+/, '').replace(/^\.|\/\.|\.\.|~|\^|:|\/$|\.lock$|\.lock\/|\\|\*|\s|^\s*$|\.$|\[|\]$/g, branchWhitespaceChar)
-			: name;
+		const branchRandomNameEnabled = config.get<boolean>('branchRandomName.enable', false);
+		const refs = await repository.getRefs({ pattern: 'refs/heads' });
 
-		let rawBranchName = defaultName;
-
-		if (!rawBranchName) {
-			// Branch name
-			if (!initialValue) {
-				const branchRandomNameEnabled = config.get<boolean>('branchRandomName.enable', false);
-				initialValue = `${branchPrefix}${branchRandomNameEnabled ? this.generateRandomBranchName(repository, branchWhitespaceChar) : ''}`;
-			}
-
-			// Branch name selection
-			const initialValueSelection: [number, number] | undefined =
-				initialValue.startsWith(branchPrefix) ? [branchPrefix.length, initialValue.length] : undefined;
-
-			rawBranchName = await window.showInputBox({
-				placeHolder: localize('branch name', "Branch name"),
-				prompt: localize('provide branch name', "Please provide a new branch name"),
-				value: initialValue,
-				valueSelection: initialValueSelection,
-				ignoreFocusOut: true,
-				validateInput: (name: string) => {
-					const validateName = new RegExp(branchValidationRegex);
-					const sanitizedName = sanitize(name);
-					if (validateName.test(sanitizedName)) {
-						// If the sanitized name that we will use is different than what is
-						// in the input box, show an info message to the user informing them
-						// the branch name that will be used.
-						return name === sanitizedName
-							? null
-							: {
-								message: localize('branch name does not match sanitized', "The new branch will be '{0}'", sanitizedName),
-								severity: InputBoxValidationSeverity.Info
-							};
-					}
-
-					return localize('branch name format invalid', "Branch name needs to match regex: {0}", branchValidationRegex);
-				}
-			});
+		if (defaultName) {
+			return sanitizeBranchName(defaultName, branchWhitespaceChar);
 		}
 
-		return sanitize(rawBranchName || '');
+		const getBranchName = async (): Promise<string> => {
+			return await repository.generateRandomBranchName() ?? branchPrefix;
+		};
+
+		const getValueSelection = (value: string): [number, number] | undefined => {
+			return value.startsWith(branchPrefix) ? [branchPrefix.length, value.length] : undefined;
+		};
+
+		const getValidationMessage = (name: string): string | InputBoxValidationMessage | undefined => {
+			const validateName = new RegExp(branchValidationRegex);
+			const sanitizedName = sanitizeBranchName(name, branchWhitespaceChar);
+
+			// Check if branch name already exists
+			const existingBranch = refs.find(ref => ref.name === sanitizedName);
+			if (existingBranch) {
+				return l10n.t('Branch "{0}" already exists', sanitizedName);
+			}
+
+			if (validateName.test(sanitizedName)) {
+				// If the sanitized name that we will use is different than what is
+				// in the input box, show an info message to the user informing them
+				// the branch name that will be used.
+				return name === sanitizedName
+					? undefined
+					: {
+						message: l10n.t('The new branch will be "{0}"', sanitizedName),
+						severity: InputBoxValidationSeverity.Info
+					};
+			}
+
+			return l10n.t('Branch name needs to match regex: {0}', branchValidationRegex);
+		};
+
+		const disposables: Disposable[] = [];
+		const inputBox = window.createInputBox();
+
+		inputBox.placeholder = l10n.t('Branch name');
+		inputBox.prompt = l10n.t('Please provide a new branch name');
+
+		inputBox.buttons = branchRandomNameEnabled ? [
+			{
+				iconPath: new ThemeIcon('refresh'),
+				tooltip: l10n.t('Regenerate Branch Name'),
+				location: QuickInputButtonLocation.Inline
+			}
+		] : [];
+
+		inputBox.value = initialValue ?? await getBranchName();
+		inputBox.valueSelection = getValueSelection(inputBox.value);
+		inputBox.validationMessage = getValidationMessage(inputBox.value);
+		inputBox.ignoreFocusOut = true;
+
+		inputBox.show();
+
+		const branchName = await new Promise<string | undefined>((resolve) => {
+			disposables.push(inputBox.onDidHide(() => resolve(undefined)));
+			disposables.push(inputBox.onDidAccept(() => resolve(inputBox.value)));
+			disposables.push(inputBox.onDidChangeValue(value => {
+				inputBox.validationMessage = getValidationMessage(value);
+			}));
+			disposables.push(inputBox.onDidTriggerButton(async () => {
+				inputBox.value = await getBranchName();
+				inputBox.valueSelection = getValueSelection(inputBox.value);
+			}));
+		});
+
+		dispose(disposables);
+		inputBox.dispose();
+
+		return sanitizeBranchName(branchName || '', branchWhitespaceChar);
 	}
 
-	private async _branch(repository: Repository, defaultName?: string, from = false): Promise<void> {
+	private async _branch(repository: Repository, defaultName?: string, from = false, target?: string): Promise<void> {
+		target = target ?? 'HEAD';
+
+		const config = workspace.getConfiguration('git');
+		const showRefDetails = config.get<boolean>('showReferenceDetails') === true;
+		const commitShortHashLength = config.get<number>('commitShortHashLength') ?? 7;
+
+		if (from) {
+			const getRefPicks = async () => {
+				const refs = await repository.getRefs({ includeCommitDetails: showRefDetails });
+				const refProcessors = new RefItemsProcessor(repository, [
+					new RefProcessor(RefType.Head),
+					new RefProcessor(RefType.RemoteHead),
+					new RefProcessor(RefType.Tag)
+				]);
+
+				return [new HEADItem(repository, commitShortHashLength), ...refProcessors.processRefs(refs)];
+			};
+
+			const placeHolder = l10n.t('Select a ref to create the branch from');
+			const choice = await window.showQuickPick(getRefPicks(), { placeHolder });
+
+			if (!choice) {
+				return;
+			}
+
+			if (choice instanceof RefItem && choice.refName) {
+				target = choice.refName;
+			}
+		}
+
 		const branchName = await this.promptForBranchName(repository, defaultName);
 
 		if (!branchName) {
 			return;
 		}
 
-		let target = 'HEAD';
-
-		if (from) {
-			const picks = [new HEADItem(repository), ...createCheckoutItems(repository)];
-			const placeHolder = localize('select a ref to create a new branch from', 'Select a ref to create the \'{0}\' branch from', branchName);
-			const choice = await window.showQuickPick(picks, { placeHolder });
-
-			if (!choice) {
-				return;
-			}
-
-			if (choice.refName) {
-				target = choice.refName;
-			}
-		}
-
 		await repository.branch(branchName, true, target);
 	}
 
+	private async pickRef<T extends QuickPickItem>(items: Promise<T[]>, placeHolder: string): Promise<T | undefined> {
+		const disposables: Disposable[] = [];
+		const quickPick = window.createQuickPick<T>();
+
+		quickPick.placeholder = placeHolder;
+		quickPick.sortByLabel = false;
+		quickPick.busy = true;
+
+		quickPick.show();
+
+		quickPick.items = await items;
+		quickPick.busy = false;
+
+		const choice = await new Promise<T | undefined>(resolve => {
+			disposables.push(quickPick.onDidHide(() => resolve(undefined)));
+			disposables.push(quickPick.onDidAccept(() => resolve(quickPick.activeItems[0])));
+		});
+
+		dispose(disposables);
+		quickPick.dispose();
+
+		return choice;
+	}
+
 	@command('git.deleteBranch', { repository: true })
-	async deleteBranch(repository: Repository, name: string, force?: boolean): Promise<void> {
-		let run: (force?: boolean) => Promise<void>;
-		if (typeof name === 'string') {
-			run = force => repository.deleteBranch(name, force);
-		} else {
-			const currentHead = repository.HEAD && repository.HEAD.name;
-			const heads = repository.refs.filter(ref => ref.type === RefType.Head && ref.name !== currentHead)
-				.map(ref => new BranchDeleteItem(ref));
+	async deleteBranch(repository: Repository, name: string | undefined, force?: boolean): Promise<void> {
+		await this._deleteBranch(repository, undefined, name, { remote: false, force });
+	}
 
-			const placeHolder = localize('select branch to delete', 'Select a branch to delete');
-			const choice = await window.showQuickPick<BranchDeleteItem>(heads, { placeHolder });
+	@command('git.graph.deleteBranch', { repository: true })
+	async deleteBranch2(repository: Repository, historyItem?: SourceControlHistoryItem, historyItemRefId?: string): Promise<void> {
+		const historyItemRef = historyItem?.references?.find(r => r.id === historyItemRefId);
+		if (!historyItemRef) {
+			return;
+		}
 
-			if (!choice || !choice.branchName) {
+		// Local branch
+		if (historyItemRef.id.startsWith('refs/heads/')) {
+			if (historyItemRef.id === repository.historyProvider.currentHistoryItemRef?.id) {
+				window.showInformationMessage(l10n.t('The active branch cannot be deleted.'));
 				return;
 			}
-			name = choice.branchName;
+
+			await this._deleteBranch(repository, undefined, historyItemRef.name, { remote: false });
+			return;
+		}
+
+		// Remote branch
+		if (historyItemRef.id === repository.historyProvider.currentHistoryItemRemoteRef?.id) {
+			window.showInformationMessage(l10n.t('The remote branch of the active branch cannot be deleted.'));
+			return;
+		}
+
+		const index = historyItemRef.name.indexOf('/');
+		if (index === -1) {
+			return;
+		}
+
+		const remoteName = historyItemRef.name.substring(0, index);
+		const refName = historyItemRef.name.substring(index + 1);
+
+		await this._deleteBranch(repository, remoteName, refName, { remote: true });
+	}
+
+	@command('git.graph.compareWithRemote', { repository: true })
+	async compareWithRemote(repository: Repository, historyItem?: SourceControlHistoryItem): Promise<void> {
+		if (!historyItem || !repository.historyProvider.currentHistoryItemRemoteRef) {
+			return;
+		}
+
+		await this._openChangesBetweenRefs(
+			repository,
+			{
+				id: repository.historyProvider.currentHistoryItemRemoteRef.revision,
+				displayId: repository.historyProvider.currentHistoryItemRemoteRef.name
+			},
+			{
+				id: historyItem.id,
+				displayId: getHistoryItemDisplayName(historyItem)
+			});
+	}
+
+	@command('git.graph.compareWithMergeBase', { repository: true })
+	async compareWithMergeBase(repository: Repository, historyItem?: SourceControlHistoryItem): Promise<void> {
+		if (!historyItem || !repository.historyProvider.currentHistoryItemBaseRef) {
+			return;
+		}
+
+		await this._openChangesBetweenRefs(
+			repository,
+			{
+				id: repository.historyProvider.currentHistoryItemBaseRef.revision,
+				displayId: repository.historyProvider.currentHistoryItemBaseRef.name
+			},
+			{
+				id: historyItem.id,
+				displayId: getHistoryItemDisplayName(historyItem)
+			});
+	}
+
+	@command('git.graph.compareRef', { repository: true })
+	async compareRef(repository: Repository, historyItem?: SourceControlHistoryItem): Promise<void> {
+		if (!repository || !historyItem) {
+			return;
+		}
+
+		const config = workspace.getConfiguration('git');
+		const showRefDetails = config.get<boolean>('showReferenceDetails') === true;
+
+		const getRefPicks = async () => {
+			const refs = await repository.getRefs({ includeCommitDetails: showRefDetails });
+			const processors = [
+				new RefProcessor(RefType.Head, BranchItem),
+				new RefProcessor(RefType.RemoteHead, BranchItem),
+				new RefProcessor(RefType.Tag, BranchItem)
+			];
+
+			const itemsProcessor = new RefItemsProcessor(repository, processors);
+			return itemsProcessor.processRefs(refs);
+		};
+
+		const placeHolder = l10n.t('Select a reference to compare with');
+		const sourceRef = await this.pickRef(getRefPicks(), placeHolder);
+
+		if (!(sourceRef instanceof BranchItem) || !sourceRef.ref.commit) {
+			return;
+		}
+
+		await this._openChangesBetweenRefs(
+			repository,
+			{
+				id: sourceRef.ref.commit,
+				displayId: sourceRef.ref.name
+			},
+			{
+				id: historyItem.id,
+				displayId: getHistoryItemDisplayName(historyItem)
+			});
+	}
+
+	private async _openChangesBetweenRefs(repository: Repository, ref1: { id: string | undefined; displayId: string | undefined }, ref2: { id: string | undefined; displayId: string | undefined }): Promise<void> {
+		if (!repository || !ref1.id || !ref2.id) {
+			return;
+		}
+
+		try {
+			const changes = await repository.diffBetweenWithStats(ref1.id, ref2.id);
+
+			if (changes.length === 0) {
+				window.showInformationMessage(l10n.t('There are no changes between "{0}" and "{1}".', ref1.displayId ?? ref1.id, ref2.displayId ?? ref2.id));
+				return;
+			}
+
+			const multiDiffSourceUri = Uri.from({ scheme: 'git-ref-compare', path: `${repository.root}/${ref1.id}..${ref2.id}` });
+			const resources = changes.map(change => toMultiFileDiffEditorUris(change, ref1.id!, ref2.id!));
+
+			await commands.executeCommand('_workbench.openMultiDiffEditor', {
+				multiDiffSourceUri,
+				title: `${ref1.displayId ?? ref1.id} \u2194 ${ref2.displayId ?? ref2.id}`,
+				resources
+			});
+		} catch (err) {
+			window.showErrorMessage(l10n.t('Failed to open changes between "{0}" and "{1}": {2}', ref1.displayId ?? ref1.id, ref2.displayId ?? ref2.id, err.message));
+		}
+	}
+
+	@command('git.deleteRemoteBranch', { repository: true })
+	async deleteRemoteBranch(repository: Repository): Promise<void> {
+		await this._deleteBranch(repository, undefined, undefined, { remote: true });
+	}
+
+	private async _deleteBranch(repository: Repository, remote: string | undefined, name: string | undefined, options: { remote: boolean; force?: boolean }): Promise<void> {
+		let run: (force?: boolean) => Promise<void>;
+
+		const config = workspace.getConfiguration('git');
+		const showRefDetails = config.get<boolean>('showReferenceDetails') === true;
+
+		if (!options.remote && typeof name === 'string') {
+			// Local branch
+			run = force => repository.deleteBranch(name!, force);
+		} else if (options.remote && typeof remote === 'string' && typeof name === 'string') {
+			// Remote branch
+			run = force => repository.deleteRemoteRef(remote, name!, { force });
+		} else {
+			const getBranchPicks = async () => {
+				const pattern = options.remote ? 'refs/remotes' : 'refs/heads';
+				const refs = await repository.getRefs({ pattern, includeCommitDetails: showRefDetails });
+				const processors = options.remote
+					? [new RefProcessor(RefType.RemoteHead, BranchDeleteItem)]
+					: [new RefProcessor(RefType.Head, BranchDeleteItem)];
+
+				const itemsProcessor = new RefItemsProcessor(repository, processors, {
+					skipCurrentBranch: true,
+					skipCurrentBranchRemote: true
+				});
+
+				return itemsProcessor.processRefs(refs);
+			};
+
+			const placeHolder = !options.remote
+				? l10n.t('Select a branch to delete')
+				: l10n.t('Select a remote branch to delete');
+
+			const choice = await this.pickRef(getBranchPicks(), placeHolder);
+
+			if (!(choice instanceof BranchDeleteItem) || !choice.refName) {
+				return;
+			}
+			name = choice.refName;
 			run = force => choice.run(repository, force);
 		}
 
 		try {
-			await run(force);
+			await run(options.force);
 		} catch (err) {
 			if (err.gitErrorCode !== GitErrorCodes.BranchNotFullyMerged) {
 				throw err;
 			}
 
-			const message = localize('confirm force delete branch', "The branch '{0}' is not fully merged. Delete anyway?", name);
-			const yes = localize('delete branch', "Delete Branch");
+			const message = l10n.t('The branch "{0}" is not fully merged. Delete anyway?', name);
+			const yes = l10n.t('Delete Branch');
 			const pick = await window.showWarningMessage(message, { modal: true }, yes);
 
 			if (pick === yes) {
@@ -2120,10 +3358,10 @@ export class CommandCenter {
 		} catch (err) {
 			switch (err.gitErrorCode) {
 				case GitErrorCodes.InvalidBranchName:
-					window.showErrorMessage(localize('invalid branch name', 'Invalid branch name'));
+					window.showErrorMessage(l10n.t('Invalid branch name'));
 					return;
 				case GitErrorCodes.BranchAlreadyExists:
-					window.showErrorMessage(localize('branch already exists', "A branch named '{0}' already exists", branchName));
+					window.showErrorMessage(l10n.t('A branch named "{0}" already exists', branchName));
 					return;
 				default:
 					throw err;
@@ -2134,122 +3372,549 @@ export class CommandCenter {
 	@command('git.merge', { repository: true })
 	async merge(repository: Repository): Promise<void> {
 		const config = workspace.getConfiguration('git');
-		const checkoutType = config.get<string | string[]>('checkoutType');
-		const includeRemotes = checkoutType === 'all' || checkoutType === 'remote' || checkoutType?.includes('remote');
+		const showRefDetails = config.get<boolean>('showReferenceDetails') === true;
 
-		const heads = repository.refs.filter(ref => ref.type === RefType.Head)
-			.filter(ref => ref.name || ref.commit)
-			.map(ref => new MergeItem(ref as Branch));
+		const getQuickPickItems = async (): Promise<QuickPickItem[]> => {
+			const refs = await repository.getRefs({ includeCommitDetails: showRefDetails });
+			const itemsProcessor = new RefItemsProcessor(repository, [
+				new RefProcessor(RefType.Head, MergeItem),
+				new RefProcessor(RefType.RemoteHead, MergeItem),
+				new RefProcessor(RefType.Tag, MergeItem)
+			], {
+				skipCurrentBranch: true,
+				skipCurrentBranchRemote: true
+			});
 
-		const remoteHeads = (includeRemotes ? repository.refs.filter(ref => ref.type === RefType.RemoteHead) : [])
-			.filter(ref => ref.name || ref.commit)
-			.map(ref => new MergeItem(ref as Branch));
+			return itemsProcessor.processRefs(refs);
+		};
 
-		const picks = [...heads, ...remoteHeads];
-		const placeHolder = localize('select a branch to merge from', 'Select a branch to merge from');
-		const choice = await window.showQuickPick<MergeItem>(picks, { placeHolder });
+		const placeHolder = l10n.t('Select a branch or tag to merge from');
+		const choice = await this.pickRef(getQuickPickItems(), placeHolder);
 
-		if (!choice) {
-			return;
+		if (choice instanceof MergeItem) {
+			await choice.run(repository);
 		}
+	}
 
-		await choice.run(repository);
+	@command('git.mergeAbort', { repository: true })
+	async abortMerge(repository: Repository): Promise<void> {
+		await repository.mergeAbort();
 	}
 
 	@command('git.rebase', { repository: true })
 	async rebase(repository: Repository): Promise<void> {
 		const config = workspace.getConfiguration('git');
-		const checkoutType = config.get<string | string[]>('checkoutType');
-		const includeRemotes = checkoutType === 'all' || checkoutType === 'remote' || checkoutType?.includes('remote');
+		const showRefDetails = config.get<boolean>('showReferenceDetails') === true;
+		const commitShortHashLength = config.get<number>('commitShortHashLength') ?? 7;
 
-		const heads = repository.refs.filter(ref => ref.type === RefType.Head)
-			.filter(ref => ref.name !== repository.HEAD?.name)
-			.filter(ref => ref.name || ref.commit);
+		const getQuickPickItems = async (): Promise<QuickPickItem[]> => {
+			const refs = await repository.getRefs({ includeCommitDetails: showRefDetails });
+			const itemsProcessor = new RefItemsProcessor(repository, [
+				new RefProcessor(RefType.Head, RebaseItem),
+				new RefProcessor(RefType.RemoteHead, RebaseItem)
+			], {
+				skipCurrentBranch: true,
+				skipCurrentBranchRemote: true
+			});
 
-		const remoteHeads = (includeRemotes ? repository.refs.filter(ref => ref.type === RefType.RemoteHead) : [])
-			.filter(ref => ref.name || ref.commit);
+			const quickPickItems = itemsProcessor.processRefs(refs);
 
-		const picks = [...heads, ...remoteHeads]
-			.map(ref => new RebaseItem(ref));
+			if (repository.HEAD?.upstream) {
+				const upstreamRef = refs.find(ref => ref.type === RefType.RemoteHead &&
+					ref.name === `${repository.HEAD!.upstream!.remote}/${repository.HEAD!.upstream!.name}`);
 
-		// set upstream branch as first
-		if (repository.HEAD?.upstream) {
-			const upstreamName = `${repository.HEAD?.upstream.remote}/${repository.HEAD?.upstream.name}`;
-			const index = picks.findIndex(e => e.ref.name === upstreamName);
-
-			if (index > -1) {
-				const [ref] = picks.splice(index, 1);
-				ref.description = '(upstream)';
-				picks.unshift(ref);
+				if (upstreamRef) {
+					quickPickItems.splice(0, 0, new RebaseUpstreamItem(upstreamRef, commitShortHashLength));
+				}
 			}
+
+			return quickPickItems;
+		};
+
+		const placeHolder = l10n.t('Select a branch to rebase onto');
+		const choice = await this.pickRef(getQuickPickItems(), placeHolder);
+
+		if (choice instanceof RebaseItem) {
+			await choice.run(repository);
 		}
-
-		const placeHolder = localize('select a branch to rebase onto', 'Select a branch to rebase onto');
-		const choice = await window.showQuickPick<RebaseItem>(picks, { placeHolder });
-
-		if (!choice) {
-			return;
-		}
-
-		await choice.run(repository);
 	}
 
 	@command('git.createTag', { repository: true })
-	async createTag(repository: Repository): Promise<void> {
-		const inputTagName = await window.showInputBox({
-			placeHolder: localize('tag name', "Tag name"),
-			prompt: localize('provide tag name', "Please provide a tag name"),
-			ignoreFocusOut: true
-		});
-
-		if (!inputTagName) {
-			return;
-		}
-
-		const inputMessage = await window.showInputBox({
-			placeHolder: localize('tag message', "Message"),
-			prompt: localize('provide tag message', "Please provide a message to annotate the tag"),
-			ignoreFocusOut: true
-		});
-
-		const name = inputTagName.replace(/^\.|\/\.|\.\.|~|\^|:|\/$|\.lock$|\.lock\/|\\|\*|\s|^\s*$|\.$/g, '-');
-		await repository.tag(name, inputMessage);
+	async createTag(repository: Repository, historyItem?: SourceControlHistoryItem): Promise<void> {
+		await this._createTag(repository, historyItem?.id);
 	}
 
 	@command('git.deleteTag', { repository: true })
 	async deleteTag(repository: Repository): Promise<void> {
-		const picks = repository.refs.filter(ref => ref.type === RefType.Tag)
-			.map(ref => new TagItem(ref));
+		const config = workspace.getConfiguration('git');
+		const showRefDetails = config.get<boolean>('showReferenceDetails') === true;
+		const commitShortHashLength = config.get<number>('commitShortHashLength') ?? 7;
 
-		if (picks.length === 0) {
-			window.showWarningMessage(localize('no tags', "This repository has no tags."));
+		const tagPicks = async (): Promise<TagDeleteItem[] | QuickPickItem[]> => {
+			const remoteTags = await repository.getRefs({ pattern: 'refs/tags', includeCommitDetails: showRefDetails });
+			return remoteTags.length === 0
+				? [{ label: l10n.t('$(info) This repository has no tags.') }]
+				: remoteTags.map(ref => new TagDeleteItem(ref, commitShortHashLength));
+		};
+
+		const placeHolder = l10n.t('Select a tag to delete');
+		const choice = await this.pickRef<TagDeleteItem | QuickPickItem>(tagPicks(), placeHolder);
+
+		if (choice instanceof TagDeleteItem) {
+			await choice.run(repository);
+		}
+	}
+
+	@command('git.migrateWorktreeChanges', { repository: true, repositoryFilter: ['repository', 'submodule'] })
+	async migrateWorktreeChanges(repository: Repository): Promise<void> {
+		let worktreeRepository: Repository | undefined;
+
+		const worktrees = await repository.getWorktrees();
+		if (worktrees.length === 1) {
+			worktreeRepository = this.model.getRepository(worktrees[0].path);
+		} else {
+			const worktreePicks = async (): Promise<WorktreeItem[] | QuickPickItem[]> => {
+				return worktrees.length === 0
+					? [{ label: l10n.t('$(info) This repository has no worktrees.') }]
+					: worktrees.map(worktree => new WorktreeItem(worktree));
+			};
+
+			const placeHolder = l10n.t('Select a worktree to migrate changes from');
+			const choice = await this.pickRef<WorktreeItem | QuickPickItem>(worktreePicks(), placeHolder);
+
+			if (!choice || !(choice instanceof WorktreeItem)) {
+				return;
+			}
+
+			worktreeRepository = this.model.getRepository(choice.worktree.path);
+		}
+
+		if (!worktreeRepository || worktreeRepository.kind !== 'worktree') {
 			return;
 		}
 
-		const placeHolder = localize('select a tag to delete', 'Select a tag to delete');
-		const choice = await window.showQuickPick(picks, { placeHolder });
+		await repository.migrateChanges(worktreeRepository.root, {
+			confirmation: true, deleteFromSource: true, untracked: true
+		});
+	}
+
+	@command('git.openWorktreeMergeEditor')
+	async openWorktreeMergeEditor(uri: Uri): Promise<void> {
+		type InputData = { uri: Uri; title: string };
+		const mergeUris = toMergeUris(uri);
+
+		const current: InputData = { uri: mergeUris.ours, title: l10n.t('Workspace') };
+		const incoming: InputData = { uri: mergeUris.theirs, title: l10n.t('Worktree') };
+
+		await commands.executeCommand('_open.mergeEditor', {
+			base: mergeUris.base,
+			input1: current,
+			input2: incoming,
+			output: uri
+		});
+	}
+
+	@command('git.createWorktree', { repository: true, repositoryFilter: ['repository', 'submodule'] })
+	async createWorktree(repository?: Repository): Promise<void> {
+		if (!repository) {
+			return;
+		}
+
+		await this._createWorktree(repository);
+	}
+
+	async _createWorktree(repository: Repository): Promise<void> {
+		const config = workspace.getConfiguration('git');
+		const branchPrefix = config.get<string>('branchPrefix')!;
+
+		// Get commitish and branch for the new worktree
+		const worktreeDetails = await this.getWorktreeCommitishAndBranch(repository);
+		if (!worktreeDetails) {
+			return;
+		}
+
+		const { commitish, branch } = worktreeDetails;
+		const worktreeName = ((branch ?? commitish).startsWith(branchPrefix)
+			? (branch ?? commitish).substring(branchPrefix.length).replace(/\//g, '-')
+			: (branch ?? commitish).replace(/\//g, '-'));
+
+		// Get path for the new worktree
+		const worktreePath = await this.getWorktreePath(repository, worktreeName);
+		if (!worktreePath) {
+			return;
+		}
+
+		try {
+			await repository.createWorktree({ path: worktreePath, branch, commitish: commitish });
+		} catch (err) {
+			if (err instanceof GitError && err.gitErrorCode === GitErrorCodes.WorktreeAlreadyExists) {
+				await this.handleWorktreeAlreadyExists(err);
+			} else if (err instanceof GitError && err.gitErrorCode === GitErrorCodes.WorktreeBranchAlreadyUsed) {
+				await this.handleWorktreeBranchAlreadyUsed(err);
+			} else {
+				throw err;
+			}
+		}
+	}
+
+	private async getWorktreeCommitishAndBranch(repository: Repository): Promise<{ commitish: string; branch: string | undefined } | undefined> {
+		const config = workspace.getConfiguration('git', Uri.file(repository.root));
+		const showRefDetails = config.get<boolean>('showReferenceDetails') === true;
+
+		const createBranch = new CreateBranchItem();
+		const getBranchPicks = async () => {
+			const refs = await repository.getRefs({ includeCommitDetails: showRefDetails });
+			const itemsProcessor = new RefItemsProcessor(repository, [
+				new RefProcessor(RefType.Head),
+				new RefProcessor(RefType.RemoteHead),
+				new RefProcessor(RefType.Tag)
+			]);
+			const branchItems = itemsProcessor.processRefs(refs);
+			return [createBranch, { label: '', kind: QuickPickItemKind.Separator }, ...branchItems];
+		};
+
+		const placeHolder = l10n.t('Select a branch or tag to create the new worktree from');
+		const choice = await this.pickRef(getBranchPicks(), placeHolder);
 
 		if (!choice) {
+			return undefined;
+		}
+
+		if (choice === createBranch) {
+			// Create new branch
+			const branch = await this.promptForBranchName(repository);
+			if (!branch) {
+				return undefined;
+			}
+
+			return { commitish: 'HEAD', branch };
+		} else {
+			// Existing reference
+			if (!(choice instanceof RefItem) || !choice.refName) {
+				return undefined;
+			}
+
+			if (choice.refName === repository.HEAD?.name) {
+				const message = l10n.t('Branch "{0}" is already checked out in the current repository.', choice.refName);
+				const createBranch = l10n.t('Create New Branch');
+				const pick = await window.showWarningMessage(message, { modal: true }, createBranch);
+
+				if (pick === createBranch) {
+					const branch = await this.promptForBranchName(repository);
+					if (!branch) {
+						return undefined;
+					}
+
+					return { commitish: 'HEAD', branch };
+				} else {
+					return undefined;
+				}
+			} else {
+				// Check whether the selected branch is checked out in an existing worktree
+				const worktree = repository.worktrees.find(worktree => worktree.ref === choice.refId);
+				if (worktree) {
+					const message = l10n.t('Branch "{0}" is already checked out in the worktree at "{1}".', choice.refName, worktree.path);
+					await this.handleWorktreeConflict(worktree.path, message);
+					return;
+				}
+				return { commitish: choice.refName, branch: undefined };
+			}
+		}
+	}
+
+	private async getWorktreePath(repository: Repository, worktreeName: string): Promise<string | undefined> {
+		const getWorktreePath = async (): Promise<string | undefined> => {
+			const worktreeRoot = this.globalState.get<string>(`${Repository.WORKTREE_ROOT_STORAGE_KEY}:${repository.root}`);
+			const defaultUri = worktreeRoot ? Uri.file(worktreeRoot) : Uri.file(path.dirname(repository.root));
+
+			const uris = await window.showOpenDialog({
+				defaultUri,
+				canSelectFiles: false,
+				canSelectFolders: true,
+				canSelectMany: false,
+				openLabel: l10n.t('Select as Worktree Destination'),
+			});
+
+			if (!uris || uris.length === 0) {
+				return;
+			}
+
+			return path.join(uris[0].fsPath, worktreeName);
+		};
+
+		const getValueSelection = (value: string): [number, number] | undefined => {
+			if (!value || !worktreeName) {
+				return;
+			}
+
+			const start = value.length - worktreeName.length;
+			return [start, value.length];
+		};
+
+		const getValidationMessage = (value: string): InputBoxValidationMessage | undefined => {
+			const worktree = repository.worktrees.find(worktree => pathEquals(path.normalize(worktree.path), path.normalize(value)));
+			return worktree ? {
+				message: l10n.t('A worktree already exists at "{0}".', value),
+				severity: InputBoxValidationSeverity.Warning
+			} : undefined;
+		};
+
+		// Default worktree path is based on the last worktree location or a worktree folder for the repository
+		const defaultWorktreeRoot = this.globalState.get<string>(`${Repository.WORKTREE_ROOT_STORAGE_KEY}:${repository.root}`);
+		const defaultWorktreePath = defaultWorktreeRoot
+			? path.join(defaultWorktreeRoot, worktreeName)
+			: repository.kind === 'worktree'
+				? path.join(path.dirname(repository.root), worktreeName)
+				: path.join(path.dirname(repository.root), `${path.basename(repository.root)}.worktrees`, worktreeName);
+
+		const disposables: Disposable[] = [];
+		const inputBox = window.createInputBox();
+		disposables.push(inputBox);
+
+		inputBox.placeholder = l10n.t('Worktree path');
+		inputBox.prompt = l10n.t('Please provide a worktree path');
+		inputBox.value = defaultWorktreePath;
+		inputBox.valueSelection = getValueSelection(inputBox.value);
+		inputBox.validationMessage = getValidationMessage(inputBox.value);
+		inputBox.ignoreFocusOut = true;
+		inputBox.buttons = [
+			{
+				iconPath: new ThemeIcon('folder'),
+				tooltip: l10n.t('Select Worktree Destination'),
+				location: QuickInputButtonLocation.Inline
+			}
+		];
+
+		inputBox.show();
+
+		const worktreePath = await new Promise<string | undefined>((resolve) => {
+			disposables.push(inputBox.onDidHide(() => resolve(undefined)));
+			disposables.push(inputBox.onDidAccept(() => resolve(inputBox.value)));
+			disposables.push(inputBox.onDidChangeValue(value => {
+				inputBox.validationMessage = getValidationMessage(value);
+			}));
+			disposables.push(inputBox.onDidTriggerButton(async () => {
+				inputBox.value = await getWorktreePath() ?? '';
+				inputBox.valueSelection = getValueSelection(inputBox.value);
+			}));
+		});
+
+		dispose(disposables);
+
+		return worktreePath;
+	}
+
+	private async handleWorktreeBranchAlreadyUsed(err: GitError): Promise<void> {
+		const match = err.stderr?.match(/fatal: '([^']+)' is already used by worktree at '([^']+)'/);
+
+		if (!match) {
 			return;
 		}
 
-		await repository.deleteTag(choice.label);
+		const [, branch, path] = match;
+		const message = l10n.t('Branch "{0}" is already checked out in the worktree at "{1}".', branch, path);
+		await this.handleWorktreeConflict(path, message);
+	}
+
+	private async handleWorktreeAlreadyExists(err: GitError): Promise<void> {
+		const match = err.stderr?.match(/fatal: '([^']+)'/);
+
+		if (!match) {
+			return;
+		}
+
+		const [, path] = match;
+		const message = l10n.t('A worktree already exists at "{0}".', path);
+		await this.handleWorktreeConflict(path, message);
+	}
+
+	private async handleWorktreeConflict(path: string, message: string): Promise<void> {
+		await this.model.openRepository(path, true, true);
+
+		const worktreeRepository = this.model.getRepository(path);
+
+		if (!worktreeRepository) {
+			return;
+		}
+
+		const openWorktree = l10n.t('Open Worktree in Current Window');
+		const openWorktreeInNewWindow = l10n.t('Open Worktree in New Window');
+		const choice = await window.showWarningMessage(message, { modal: true }, openWorktree, openWorktreeInNewWindow);
+
+		if (choice === openWorktree) {
+			await this.openWorktreeInCurrentWindow(worktreeRepository);
+		} else if (choice === openWorktreeInNewWindow) {
+			await this.openWorktreeInNewWindow(worktreeRepository);
+		}
+		return;
+	}
+
+	@command('git.deleteWorktree', { repository: true, repositoryFilter: ['repository', 'submodule'] })
+	async deleteWorktreeFromPalette(repository: Repository): Promise<void> {
+		const config = workspace.getConfiguration('git', Uri.file(repository.root));
+		const commitShortHashLength = config.get<number>('commitShortHashLength') ?? 7;
+
+		const worktreePicks = async (): Promise<WorktreeDeleteItem[] | QuickPickItem[]> => {
+			const worktrees = await repository.getWorktreeDetails();
+			return worktrees.length === 0
+				? [{ label: l10n.t('$(info) This repository has no worktrees.') }]
+				: worktrees.map(worktree => new WorktreeDeleteItem(worktree, commitShortHashLength));
+		};
+
+		const placeHolder = l10n.t('Select a worktree to delete');
+		const choice = await this.pickRef<WorktreeDeleteItem | QuickPickItem>(worktreePicks(), placeHolder);
+
+		if (choice instanceof WorktreeDeleteItem) {
+			await choice.run(repository);
+		}
+	}
+
+	@command('git.deleteWorktree2', { repository: true, repositoryFilter: ['worktree'] })
+	async deleteWorktree(repository: Repository): Promise<void> {
+		if (!repository.dotGit.commonPath) {
+			return;
+		}
+
+		const mainRepository = this.model.getRepository(path.dirname(repository.dotGit.commonPath));
+		if (!mainRepository) {
+			await window.showErrorMessage(l10n.t('You cannot delete the worktree you are currently in. Please switch to the main repository first.'), { modal: true });
+			return;
+		}
+
+		await mainRepository.deleteWorktree(repository.root);
+	}
+
+	@command('git.openWorktree', { repository: true })
+	async openWorktreeInCurrentWindow(repository: Repository): Promise<void> {
+		if (!repository) {
+			return;
+		}
+
+		const uri = Uri.file(repository.root);
+		await commands.executeCommand('vscode.openFolder', uri, { forceReuseWindow: true });
+	}
+
+	@command('git.openWorktreeInNewWindow', { repository: true })
+	async openWorktreeInNewWindow(repository: Repository): Promise<void> {
+		if (!repository) {
+			return;
+		}
+
+		const uri = Uri.file(repository.root);
+		await commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: true });
+	}
+
+	@command('git.graph.deleteTag', { repository: true })
+	async deleteTag2(repository: Repository, historyItem?: SourceControlHistoryItem, historyItemRefId?: string): Promise<void> {
+		const historyItemRef = historyItem?.references?.find(r => r.id === historyItemRefId);
+		if (!historyItemRef) {
+			return;
+		}
+
+		await repository.deleteTag(historyItemRef.name);
+	}
+
+	@command('git.deleteRemoteTag', { repository: true })
+	async deleteRemoteTag(repository: Repository): Promise<void> {
+		const config = workspace.getConfiguration('git');
+		const commitShortHashLength = config.get<number>('commitShortHashLength') ?? 7;
+
+		const remotePicks = repository.remotes
+			.filter(r => r.pushUrl !== undefined)
+			.map(r => new RemoteItem(repository, r));
+
+		if (remotePicks.length === 0) {
+			window.showErrorMessage(l10n.t("Your repository has no remotes configured to push to."));
+			return;
+		}
+
+		let remoteName = remotePicks[0].remoteName;
+		if (remotePicks.length > 1) {
+			const remotePickPlaceholder = l10n.t('Select a remote to delete a tag from');
+			const remotePick = await window.showQuickPick(remotePicks, { placeHolder: remotePickPlaceholder });
+
+			if (!remotePick) {
+				return;
+			}
+
+			remoteName = remotePick.remoteName;
+		}
+
+		const remoteTagPicks = async (): Promise<RemoteTagDeleteItem[] | QuickPickItem[]> => {
+			const remoteTagsRaw = await repository.getRemoteRefs(remoteName, { tags: true });
+
+			// Deduplicate annotated and lightweight tags
+			const remoteTagNames = new Set<string>();
+			const remoteTags: Ref[] = [];
+
+			for (const tag of remoteTagsRaw) {
+				const tagName = (tag.name ?? '').replace(/\^{}$/, '');
+				if (!remoteTagNames.has(tagName)) {
+					remoteTags.push({ ...tag, name: tagName });
+					remoteTagNames.add(tagName);
+				}
+			}
+
+			return remoteTags.length === 0
+				? [{ label: l10n.t('$(info) Remote "{0}" has no tags.', remoteName) }]
+				: remoteTags.map(ref => new RemoteTagDeleteItem(ref, commitShortHashLength));
+		};
+
+		const tagPickPlaceholder = l10n.t('Select a remote tag to delete');
+		const remoteTagPick = await window.showQuickPick<RemoteTagDeleteItem | QuickPickItem>(remoteTagPicks(), { placeHolder: tagPickPlaceholder });
+
+		if (remoteTagPick instanceof RemoteTagDeleteItem) {
+			await remoteTagPick.run(repository, remoteName);
+		}
 	}
 
 	@command('git.fetch', { repository: true })
 	async fetch(repository: Repository): Promise<void> {
 		if (repository.remotes.length === 0) {
-			window.showWarningMessage(localize('no remotes to fetch', "This repository has no remotes configured to fetch from."));
+			window.showWarningMessage(l10n.t('This repository has no remotes configured to fetch from.'));
 			return;
 		}
 
-		await repository.fetchDefault();
+		if (repository.remotes.length === 1) {
+			await repository.fetchDefault();
+			return;
+		}
+
+		const remoteItems: RemoteItem[] = repository.remotes.map(r => new RemoteItem(repository, r));
+
+		if (repository.HEAD?.upstream?.remote) {
+			// Move default remote to the top
+			const defaultRemoteIndex = remoteItems
+				.findIndex(r => r.remoteName === repository.HEAD!.upstream!.remote);
+
+			if (defaultRemoteIndex !== -1) {
+				remoteItems.splice(0, 0, ...remoteItems.splice(defaultRemoteIndex, 1));
+			}
+		}
+
+		const quickpick = window.createQuickPick();
+		quickpick.placeholder = l10n.t('Select a remote to fetch');
+		quickpick.canSelectMany = false;
+		quickpick.items = [...remoteItems, { label: '', kind: QuickPickItemKind.Separator }, new FetchAllRemotesItem(repository)];
+
+		quickpick.show();
+		const remoteItem = await new Promise<RemoteItem | FetchAllRemotesItem | undefined>(resolve => {
+			quickpick.onDidAccept(() => resolve(quickpick.activeItems[0] as RemoteItem | FetchAllRemotesItem));
+			quickpick.onDidHide(() => resolve(undefined));
+		});
+		quickpick.hide();
+
+		if (!remoteItem) {
+			return;
+		}
+
+		await remoteItem.run();
 	}
 
 	@command('git.fetchPrune', { repository: true })
 	async fetchPrune(repository: Repository): Promise<void> {
 		if (repository.remotes.length === 0) {
-			window.showWarningMessage(localize('no remotes to fetch', "This repository has no remotes configured to fetch from."));
+			window.showWarningMessage(l10n.t('This repository has no remotes configured to fetch from.'));
 			return;
 		}
 
@@ -2260,43 +3925,63 @@ export class CommandCenter {
 	@command('git.fetchAll', { repository: true })
 	async fetchAll(repository: Repository): Promise<void> {
 		if (repository.remotes.length === 0) {
-			window.showWarningMessage(localize('no remotes to fetch', "This repository has no remotes configured to fetch from."));
+			window.showWarningMessage(l10n.t('This repository has no remotes configured to fetch from.'));
 			return;
 		}
 
 		await repository.fetchAll();
 	}
 
+	@command('git.fetchRef', { repository: true })
+	async fetchRef(repository: Repository, ref?: string): Promise<void> {
+		ref = ref ?? repository?.historyProvider.currentHistoryItemRemoteRef?.id;
+		if (!repository || !ref) {
+			return;
+		}
+
+		const branch = await repository.getBranch(ref);
+		await repository.fetch({ remote: branch.remote, ref: branch.name });
+	}
+
 	@command('git.pullFrom', { repository: true })
 	async pullFrom(repository: Repository): Promise<void> {
+		const config = workspace.getConfiguration('git');
+		const commitShortHashLength = config.get<number>('commitShortHashLength') ?? 7;
+
 		const remotes = repository.remotes;
 
 		if (remotes.length === 0) {
-			window.showWarningMessage(localize('no remotes to pull', "Your repository has no remotes configured to pull from."));
+			window.showWarningMessage(l10n.t('Your repository has no remotes configured to pull from.'));
 			return;
 		}
 
-		const remotePicks = remotes.filter(r => r.fetchUrl !== undefined).map(r => ({ label: r.name, description: r.fetchUrl! }));
-		const placeHolder = localize('pick remote pull repo', "Pick a remote to pull the branch from");
-		const remotePick = await window.showQuickPick(remotePicks, { placeHolder });
+		let remoteName = remotes[0].name;
+		if (remotes.length > 1) {
+			const remotePicks = remotes.filter(r => r.fetchUrl !== undefined).map(r => ({ label: r.name, description: r.fetchUrl! }));
+			const placeHolder = l10n.t('Pick a remote to pull the branch from');
+			const remotePick = await window.showQuickPick(remotePicks, { placeHolder });
 
-		if (!remotePick) {
+			if (!remotePick) {
+				return;
+			}
+
+			remoteName = remotePick.label;
+		}
+
+		const getBranchPicks = async (): Promise<RefItem[]> => {
+			const remoteRefs = await repository.getRefs({ pattern: `refs/remotes/${remoteName}/` });
+			return remoteRefs.map(r => new RefItem(r, commitShortHashLength));
+		};
+
+		const branchPlaceHolder = l10n.t('Pick a branch to pull from');
+		const branchPick = await this.pickRef(getBranchPicks(), branchPlaceHolder);
+
+		if (!branchPick || !branchPick.refName) {
 			return;
 		}
 
-		const remoteRefs = repository.refs;
-		const remoteRefsFiltered = remoteRefs.filter(r => (r.remote === remotePick.label));
-		const branchPicks = remoteRefsFiltered.map(r => ({ label: r.name! }));
-		const branchPlaceHolder = localize('pick branch pull', "Pick a branch to pull from");
-		const branchPick = await window.showQuickPick(branchPicks, { placeHolder: branchPlaceHolder });
-
-		if (!branchPick) {
-			return;
-		}
-
-		const remoteCharCnt = remotePick.label.length;
-
-		await repository.pullFrom(false, remotePick.label, branchPick.label.slice(remoteCharCnt + 1));
+		const remoteCharCnt = remoteName.length;
+		await repository.pullFrom(false, remoteName, branchPick.refName.slice(remoteCharCnt + 1));
 	}
 
 	@command('git.pull', { repository: true })
@@ -2304,7 +3989,7 @@ export class CommandCenter {
 		const remotes = repository.remotes;
 
 		if (remotes.length === 0) {
-			window.showWarningMessage(localize('no remotes to pull', "Your repository has no remotes configured to pull from."));
+			window.showWarningMessage(l10n.t('Your repository has no remotes configured to pull from.'));
 			return;
 		}
 
@@ -2316,11 +4001,22 @@ export class CommandCenter {
 		const remotes = repository.remotes;
 
 		if (remotes.length === 0) {
-			window.showWarningMessage(localize('no remotes to pull', "Your repository has no remotes configured to pull from."));
+			window.showWarningMessage(l10n.t('Your repository has no remotes configured to pull from.'));
 			return;
 		}
 
 		await repository.pullWithRebase(repository.HEAD);
+	}
+
+	@command('git.pullRef', { repository: true })
+	async pullRef(repository: Repository, ref?: string): Promise<void> {
+		ref = ref ?? repository?.historyProvider.currentHistoryItemRemoteRef?.id;
+		if (!repository || !ref) {
+			return;
+		}
+
+		const branch = await repository.getBranch(ref);
+		await repository.pullFrom(false, branch.remote, branch.name);
 	}
 
 	private async _push(repository: Repository, pushOptions: PushOptions) {
@@ -2331,8 +4027,8 @@ export class CommandCenter {
 				return;
 			}
 
-			const addRemote = localize('addremote', 'Add Remote');
-			const result = await window.showWarningMessage(localize('no remotes to push', "Your repository has no remotes configured to push to."), addRemote);
+			const addRemote = l10n.t('Add Remote');
+			const result = await window.showWarningMessage(l10n.t('Your repository has no remotes configured to push to.'), addRemote);
 
 			if (result === addRemote) {
 				await this.addRemote(repository);
@@ -2346,16 +4042,18 @@ export class CommandCenter {
 
 		if (pushOptions.forcePush) {
 			if (!config.get<boolean>('allowForcePush')) {
-				await window.showErrorMessage(localize('force push not allowed', "Force push is not allowed, please enable it with the 'git.allowForcePush' setting."));
+				await window.showErrorMessage(l10n.t('Force push is not allowed, please enable it with the "git.allowForcePush" setting.'));
 				return;
 			}
 
-			forcePushMode = config.get<boolean>('useForcePushWithLease') === true ? ForcePushMode.ForceWithLease : ForcePushMode.Force;
+			const useForcePushWithLease = config.get<boolean>('useForcePushWithLease') === true;
+			const useForcePushIfIncludes = config.get<boolean>('useForcePushIfIncludes') === true;
+			forcePushMode = useForcePushWithLease ? useForcePushIfIncludes ? ForcePushMode.ForceWithLeaseIfIncludes : ForcePushMode.ForceWithLease : ForcePushMode.Force;
 
 			if (config.get<boolean>('confirmForcePush')) {
-				const message = localize('confirm force push', "You are about to force push your changes, this can be destructive and could inadvertently overwrite changes made by others.\n\nAre you sure to continue?");
-				const yes = localize('ok', "OK");
-				const neverAgain = localize('never ask again', "OK, Don't Ask Again");
+				const message = l10n.t('You are about to force push your changes, this can be destructive and could inadvertently overwrite changes made by others.\n\nAre you sure to continue?');
+				const yes = l10n.t('OK');
+				const neverAgain = l10n.t('OK, Don\'t Ask Again');
 				const pick = await window.showWarningMessage(message, { modal: true }, yes, neverAgain);
 
 				if (pick === neverAgain) {
@@ -2377,7 +4075,7 @@ export class CommandCenter {
 
 		if (!repository.HEAD || !repository.HEAD.name) {
 			if (!pushOptions.silent) {
-				window.showWarningMessage(localize('nobranch', "Please check out a branch to push to a remote."));
+				window.showWarningMessage(l10n.t('Please check out a branch to push to a remote.'));
 			}
 			return;
 		}
@@ -2394,12 +4092,20 @@ export class CommandCenter {
 					return;
 				}
 
-				const branchName = repository.HEAD.name;
-				const message = localize('confirm publish branch', "The branch '{0}' has no remote branch. Would you like to publish this branch?", branchName);
-				const yes = localize('ok', "OK");
-				const pick = await window.showWarningMessage(message, { modal: true }, yes);
+				if (this.globalState.get<boolean>('confirmBranchPublish', true)) {
+					const branchName = repository.HEAD.name;
+					const message = l10n.t('The branch "{0}" has no remote branch. Would you like to publish this branch?', branchName);
+					const yes = l10n.t('OK');
+					const neverAgain = l10n.t('OK, Don\'t Ask Again');
+					const pick = await window.showWarningMessage(message, { modal: true }, yes, neverAgain);
 
-				if (pick === yes) {
+					if (pick === yes || pick === neverAgain) {
+						if (pick === neverAgain) {
+							this.globalState.update('confirmBranchPublish', false);
+						}
+						await this.publish(repository);
+					}
+				} else {
 					await this.publish(repository);
 				}
 			}
@@ -2408,7 +4114,7 @@ export class CommandCenter {
 			if (!pushOptions.pushTo?.remote) {
 				const addRemote = new AddRemoteItem(this);
 				const picks = [...remotes.filter(r => r.pushUrl !== undefined).map(r => ({ label: r.name, description: r.pushUrl })), addRemote];
-				const placeHolder = localize('pick remote', "Pick a remote to publish the branch '{0}' to:", branchName);
+				const placeHolder = l10n.t('Pick a remote to publish the branch "{0}" to:', branchName);
 				const choice = await window.showQuickPick(picks, { placeHolder });
 
 				if (!choice) {
@@ -2450,11 +4156,20 @@ export class CommandCenter {
 		await this._push(repository, { pushType: PushType.PushFollowTags, forcePush: true });
 	}
 
+	@command('git.pushRef', { repository: true })
+	async pushRef(repository: Repository): Promise<void> {
+		if (!repository) {
+			return;
+		}
+
+		await this._push(repository, { pushType: PushType.Push });
+	}
+
 	@command('git.cherryPick', { repository: true })
 	async cherryPick(repository: Repository): Promise<void> {
 		const hash = await window.showInputBox({
-			placeHolder: localize('commit hash', "Commit Hash"),
-			prompt: localize('provide commit hash', "Please provide the commit hash"),
+			placeHolder: l10n.t('Commit Hash'),
+			prompt: l10n.t('Please provide the commit hash'),
 			ignoreFocusOut: true
 		});
 
@@ -2463,6 +4178,20 @@ export class CommandCenter {
 		}
 
 		await repository.cherryPick(hash);
+	}
+
+	@command('git.graph.cherryPick', { repository: true })
+	async cherryPick2(repository: Repository, historyItem?: SourceControlHistoryItem): Promise<void> {
+		if (!historyItem) {
+			return;
+		}
+
+		await repository.cherryPick(historyItem.id);
+	}
+
+	@command('git.cherryPickAbort', { repository: true })
+	async cherryPickAbort(repository: Repository): Promise<void> {
+		await repository.cherryPickAbort();
 	}
 
 	@command('git.pushTo', { repository: true })
@@ -2483,8 +4212,8 @@ export class CommandCenter {
 	@command('git.addRemote', { repository: true })
 	async addRemote(repository: Repository): Promise<string | undefined> {
 		const url = await pickRemoteSource({
-			providerLabel: provider => localize('addfrom', "Add remote from {0}", provider.name),
-			urlLabel: localize('addFrom', "Add remote from URL")
+			providerLabel: provider => l10n.t('Add remote from {0}', provider.name),
+			urlLabel: l10n.t('Add remote from URL')
 		});
 
 		if (!url) {
@@ -2492,14 +4221,14 @@ export class CommandCenter {
 		}
 
 		const resultName = await window.showInputBox({
-			placeHolder: localize('remote name', "Remote name"),
-			prompt: localize('provide remote name', "Please provide a remote name"),
+			placeHolder: l10n.t('Remote name'),
+			prompt: l10n.t('Please provide a remote name'),
 			ignoreFocusOut: true,
 			validateInput: (name: string) => {
 				if (!sanitizeRemoteName(name)) {
-					return localize('remote name format invalid', "Remote name format invalid");
+					return l10n.t('Remote name format invalid');
 				} else if (repository.remotes.find(r => r.name === name)) {
-					return localize('remote already exists', "Remote '{0}' already exists.", name);
+					return l10n.t('Remote "{0}" already exists.', name);
 				}
 
 				return null;
@@ -2522,20 +4251,20 @@ export class CommandCenter {
 		const remotes = repository.remotes;
 
 		if (remotes.length === 0) {
-			window.showErrorMessage(localize('no remotes added', "Your repository has no remotes."));
+			window.showErrorMessage(l10n.t('Your repository has no remotes.'));
 			return;
 		}
 
-		const picks = remotes.map(r => r.name);
-		const placeHolder = localize('remove remote', "Pick a remote to remove");
+		const picks: RemoteItem[] = repository.remotes.map(r => new RemoteItem(repository, r));
+		const placeHolder = l10n.t('Pick a remote to remove');
 
-		const remoteName = await window.showQuickPick(picks, { placeHolder });
+		const remote = await window.showQuickPick(picks, { placeHolder });
 
-		if (!remoteName) {
+		if (!remote) {
 			return;
 		}
 
-		await repository.removeRemote(remoteName);
+		await repository.removeRemote(remote.remoteName);
 	}
 
 	private async _sync(repository: Repository, rebase: boolean): Promise<void> {
@@ -2544,14 +4273,7 @@ export class CommandCenter {
 		if (!HEAD) {
 			return;
 		} else if (!HEAD.upstream) {
-			const branchName = HEAD.name;
-			const message = localize('confirm publish branch', "The branch '{0}' has no remote branch. Would you like to publish this branch?", branchName);
-			const yes = localize('ok', "OK");
-			const pick = await window.showWarningMessage(message, { modal: true }, yes);
-
-			if (pick === yes) {
-				await this.publish(repository);
-			}
+			this._push(repository, { pushType: PushType.Push });
 			return;
 		}
 
@@ -2563,9 +4285,9 @@ export class CommandCenter {
 		const shouldPrompt = !isReadonly && config.get<boolean>('confirmSync') === true;
 
 		if (shouldPrompt) {
-			const message = localize('sync is unpredictable', "This action will pull and push commits from and to '{0}/{1}'.", HEAD.upstream.remote, HEAD.upstream.name);
-			const yes = localize('ok', "OK");
-			const neverAgain = localize('never again', "OK, Don't Show Again");
+			const message = l10n.t('This action will pull and push commits from and to "{0}/{1}".', HEAD.upstream.remote, HEAD.upstream.name);
+			const yes = l10n.t('OK');
+			const neverAgain = l10n.t('OK, Don\'t Show Again');
 			const pick = await window.showWarningMessage(message, { modal: true }, yes, neverAgain);
 
 			if (pick === neverAgain) {
@@ -2575,17 +4297,16 @@ export class CommandCenter {
 			}
 		}
 
-		if (rebase) {
-			await repository.syncRebase(HEAD);
-		} else {
-			await repository.sync(HEAD);
-		}
+		await repository.sync(HEAD, rebase);
 	}
 
 	@command('git.sync', { repository: true })
 	async sync(repository: Repository): Promise<void> {
+		const config = workspace.getConfiguration('git', Uri.file(repository.root));
+		const rebase = config.get<boolean>('rebaseWhenSync', false) === true;
+
 		try {
-			await this._sync(repository, false);
+			await this._sync(repository, rebase);
 		} catch (err) {
 			if (/Cancelled/i.test(err && (err.message || err.stderr || ''))) {
 				return;
@@ -2598,13 +4319,16 @@ export class CommandCenter {
 	@command('git._syncAll')
 	async syncAll(): Promise<void> {
 		await Promise.all(this.model.repositories.map(async repository => {
+			const config = workspace.getConfiguration('git', Uri.file(repository.root));
+			const rebase = config.get<boolean>('rebaseWhenSync', false) === true;
+
 			const HEAD = repository.HEAD;
 
 			if (!HEAD || !HEAD.upstream) {
 				return;
 			}
 
-			await repository.sync(HEAD);
+			await repository.sync(HEAD, rebase);
 		}));
 	}
 
@@ -2630,7 +4354,7 @@ export class CommandCenter {
 			const publishers = this.model.getRemoteSourcePublishers();
 
 			if (publishers.length === 0) {
-				window.showWarningMessage(localize('no remotes to publish', "Your repository has no remotes configured to publish to."));
+				window.showWarningMessage(l10n.t('Your repository has no remotes configured to publish to.'));
 				return;
 			}
 
@@ -2640,8 +4364,8 @@ export class CommandCenter {
 				publisher = publishers[0];
 			} else {
 				const picks = publishers
-					.map(provider => ({ label: (provider.icon ? `$(${provider.icon}) ` : '') + localize('publish to', "Publish to {0}", provider.name), alwaysShow: true, provider }));
-				const placeHolder = localize('pick provider', "Pick a provider to publish the branch '{0}' to:", branchName);
+					.map(provider => ({ label: (provider.icon ? `$(${provider.icon}) ` : '') + l10n.t('Publish to {0}', provider.name), alwaysShow: true, provider }));
+				const placeHolder = l10n.t('Pick a provider to publish the branch "{0}" to:', branchName);
 				const choice = await window.showQuickPick(picks, { placeHolder });
 
 				if (!choice) {
@@ -2666,7 +4390,7 @@ export class CommandCenter {
 
 		const addRemote = new AddRemoteItem(this);
 		const picks = [...repository.remotes.map(r => ({ label: r.name, description: r.pushUrl })), addRemote];
-		const placeHolder = localize('pick remote', "Pick a remote to publish the branch '{0}' to:", branchName);
+		const placeHolder = l10n.t('Pick a remote to publish the branch "{0}" to:', branchName);
 		const choice = await window.showQuickPick(picks, { placeHolder });
 
 		if (!choice) {
@@ -2741,14 +4465,21 @@ export class CommandCenter {
 		await commands.executeCommand('revealFileInOS', resourceState.resourceUri);
 	}
 
-	private async _stash(repository: Repository, includeUntracked = false): Promise<void> {
+	private async _stash(repository: Repository, includeUntracked = false, staged = false): Promise<boolean> {
 		const noUnstagedChanges = repository.workingTreeGroup.resourceStates.length === 0
 			&& (!includeUntracked || repository.untrackedGroup.resourceStates.length === 0);
 		const noStagedChanges = repository.indexGroup.resourceStates.length === 0;
 
-		if (noUnstagedChanges && noStagedChanges) {
-			window.showInformationMessage(localize('no changes stash', "There are no changes to stash."));
-			return;
+		if (staged) {
+			if (noStagedChanges) {
+				window.showInformationMessage(l10n.t('There are no staged changes to stash.'));
+				return false;
+			}
+		} else {
+			if (noUnstagedChanges && noStagedChanges) {
+				window.showInformationMessage(l10n.t('There are no changes to stash.'));
+				return false;
+			}
 		}
 
 		const config = workspace.getConfiguration('git', Uri.file(repository.root));
@@ -2765,16 +4496,16 @@ export class CommandCenter {
 
 			if (documents.length > 0) {
 				const message = documents.length === 1
-					? localize('unsaved stash files single', "The following file has unsaved changes which won't be included in the stash if you proceed: {0}.\n\nWould you like to save it before stashing?", path.basename(documents[0].uri.fsPath))
-					: localize('unsaved stash files', "There are {0} unsaved files.\n\nWould you like to save them before stashing?", documents.length);
-				const saveAndStash = localize('save and stash', "Save All & Stash");
-				const stash = localize('stash', "Stash Anyway");
+					? l10n.t('The following file has unsaved changes which won\'t be included in the stash if you proceed: {0}.\n\nWould you like to save it before stashing?', path.basename(documents[0].uri.fsPath))
+					: l10n.t('There are {0} unsaved files.\n\nWould you like to save them before stashing?', documents.length);
+				const saveAndStash = l10n.t('Save All & Stash');
+				const stash = l10n.t('Stash Anyway');
 				const pick = await window.showWarningMessage(message, { modal: true }, saveAndStash, stash);
 
 				if (pick === saveAndStash) {
 					await Promise.all(documents.map(d => d.save()));
 				} else if (pick !== stash) {
-					return; // do not stash on cancel
+					return false; // do not stash on cancel
 				}
 			}
 		}
@@ -2787,30 +4518,48 @@ export class CommandCenter {
 
 		message = await window.showInputBox({
 			value: message,
-			prompt: localize('provide stash message', "Optionally provide a stash message"),
-			placeHolder: localize('stash message', "Stash message")
+			prompt: l10n.t('Optionally provide a stash message'),
+			placeHolder: l10n.t('Stash message')
 		});
 
 		if (typeof message === 'undefined') {
-			return;
+			return false;
 		}
 
-		await repository.createStash(message, includeUntracked);
+		try {
+			await repository.createStash(message, includeUntracked, staged);
+			return true;
+		} catch (err) {
+			if (/You do not have the initial commit yet/.test(err.stderr || '')) {
+				window.showInformationMessage(l10n.t('The repository does not have any commits. Please make an initial commit before creating a stash.'));
+				return false;
+			}
+
+			throw err;
+		}
 	}
 
 	@command('git.stash', { repository: true })
-	stash(repository: Repository): Promise<void> {
-		return this._stash(repository);
+	async stash(repository: Repository): Promise<boolean> {
+		const result = await this._stash(repository);
+		return result;
+	}
+
+	@command('git.stashStaged', { repository: true })
+	async stashStaged(repository: Repository): Promise<boolean> {
+		const result = await this._stash(repository, false, true);
+		return result;
 	}
 
 	@command('git.stashIncludeUntracked', { repository: true })
-	stashIncludeUntracked(repository: Repository): Promise<void> {
-		return this._stash(repository, true);
+	async stashIncludeUntracked(repository: Repository): Promise<boolean> {
+		const result = await this._stash(repository, true);
+		return result;
 	}
 
 	@command('git.stashPop', { repository: true })
 	async stashPop(repository: Repository): Promise<void> {
-		const placeHolder = localize('pick stash to pop', "Pick a stash to pop");
+		const placeHolder = l10n.t('Pick a stash to pop');
 		const stash = await this.pickStash(repository, placeHolder);
 
 		if (!stash) {
@@ -2825,16 +4574,27 @@ export class CommandCenter {
 		const stashes = await repository.getStashes();
 
 		if (stashes.length === 0) {
-			window.showInformationMessage(localize('no stashes', "There are no stashes in the repository."));
+			window.showInformationMessage(l10n.t('There are no stashes in the repository.'));
 			return;
 		}
 
 		await repository.popStash();
 	}
 
+	@command('git.stashPopEditor')
+	async stashPopEditor(uri: Uri): Promise<void> {
+		const result = await this.getStashFromUri(uri);
+		if (!result) {
+			return;
+		}
+
+		await commands.executeCommand('workbench.action.closeActiveEditor');
+		await result.repository.popStash(result.stash.index);
+	}
+
 	@command('git.stashApply', { repository: true })
 	async stashApply(repository: Repository): Promise<void> {
-		const placeHolder = localize('pick stash to apply', "Pick a stash to apply");
+		const placeHolder = l10n.t('Pick a stash to apply');
 		const stash = await this.pickStash(repository, placeHolder);
 
 		if (!stash) {
@@ -2849,33 +4609,34 @@ export class CommandCenter {
 		const stashes = await repository.getStashes();
 
 		if (stashes.length === 0) {
-			window.showInformationMessage(localize('no stashes', "There are no stashes in the repository."));
+			window.showInformationMessage(l10n.t('There are no stashes in the repository.'));
 			return;
 		}
 
 		await repository.applyStash();
 	}
 
+	@command('git.stashApplyEditor')
+	async stashApplyEditor(uri: Uri): Promise<void> {
+		const result = await this.getStashFromUri(uri);
+		if (!result) {
+			return;
+		}
+
+		await commands.executeCommand('workbench.action.closeActiveEditor');
+		await result.repository.applyStash(result.stash.index);
+	}
+
 	@command('git.stashDrop', { repository: true })
 	async stashDrop(repository: Repository): Promise<void> {
-		const placeHolder = localize('pick stash to drop', "Pick a stash to drop");
+		const placeHolder = l10n.t('Pick a stash to drop');
 		const stash = await this.pickStash(repository, placeHolder);
 
 		if (!stash) {
 			return;
 		}
 
-		// request confirmation for the operation
-		const yes = localize('yes', "Yes");
-		const result = await window.showWarningMessage(
-			localize('sure drop', "Are you sure you want to drop the stash: {0}?", stash.description),
-			yes
-		);
-		if (result !== yes) {
-			return;
-		}
-
-		await repository.dropStash(stash.index);
+		await this._stashDrop(repository, stash.index, stash.description);
 	}
 
 	@command('git.stashDropAll', { repository: true })
@@ -2883,17 +4644,17 @@ export class CommandCenter {
 		const stashes = await repository.getStashes();
 
 		if (stashes.length === 0) {
-			window.showInformationMessage(localize('no stashes', "There are no stashes in the repository."));
+			window.showInformationMessage(l10n.t('There are no stashes in the repository.'));
 			return;
 		}
 
 		// request confirmation for the operation
-		const yes = localize('yes', "Yes");
+		const yes = l10n.t('Yes');
 		const question = stashes.length === 1 ?
-			localize('drop one stash', "Are you sure you want to drop ALL stashes? There is 1 stash that will be subject to pruning, and MAY BE IMPOSSIBLE TO RECOVER.") :
-			localize('drop all stashes', "Are you sure you want to drop ALL stashes? There are {0} stashes that will be subject to pruning, and MAY BE IMPOSSIBLE TO RECOVER.", stashes.length);
+			l10n.t('Are you sure you want to drop ALL stashes? There is 1 stash that will be subject to pruning, and MAY BE IMPOSSIBLE TO RECOVER.') :
+			l10n.t('Are you sure you want to drop ALL stashes? There are {0} stashes that will be subject to pruning, and MAY BE IMPOSSIBLE TO RECOVER.', stashes.length);
 
-		const result = await window.showWarningMessage(question, yes);
+		const result = await window.showWarningMessage(question, { modal: true }, yes);
 		if (result !== yes) {
 			return;
 		}
@@ -2901,17 +4662,118 @@ export class CommandCenter {
 		await repository.dropStash();
 	}
 
-	private async pickStash(repository: Repository, placeHolder: string): Promise<Stash | undefined> {
-		const stashes = await repository.getStashes();
-
-		if (stashes.length === 0) {
-			window.showInformationMessage(localize('no stashes', "There are no stashes in the repository."));
+	@command('git.stashDropEditor')
+	async stashDropEditor(uri: Uri): Promise<void> {
+		const result = await this.getStashFromUri(uri);
+		if (!result) {
 			return;
 		}
 
-		const picks = stashes.map(stash => ({ label: `#${stash.index}:  ${stash.description}`, description: '', details: '', stash }));
-		const result = await window.showQuickPick(picks, { placeHolder });
-		return result && result.stash;
+		if (await this._stashDrop(result.repository, result.stash.index, result.stash.description)) {
+			await commands.executeCommand('workbench.action.closeActiveEditor');
+		}
+	}
+
+	async _stashDrop(repository: Repository, index: number, description: string): Promise<boolean> {
+		const yes = l10n.t('Yes');
+		const result = await window.showWarningMessage(
+			l10n.t('Are you sure you want to drop the stash: {0}?', description),
+			{ modal: true },
+			yes
+		);
+		if (result !== yes) {
+			return false;
+		}
+
+		await repository.dropStash(index);
+		return true;
+	}
+
+	@command('git.stashView', { repository: true })
+	async stashView(repository: Repository): Promise<void> {
+		const placeHolder = l10n.t('Pick a stash to view');
+		const stash = await this.pickStash(repository, placeHolder);
+
+		if (!stash) {
+			return;
+		}
+
+		await this._viewStash(repository, stash);
+	}
+
+	private async pickStash(repository: Repository, placeHolder: string): Promise<Stash | undefined> {
+		const getStashQuickPickItems = async (): Promise<StashItem[] | QuickPickItem[]> => {
+			const stashes = await repository.getStashes();
+			return stashes.length > 0 ?
+				stashes.map(stash => new StashItem(stash)) :
+				[{ label: l10n.t('$(info) This repository has no stashes.') }];
+		};
+
+		const result = await window.showQuickPick<StashItem | QuickPickItem>(getStashQuickPickItems(), { placeHolder });
+		return result instanceof StashItem ? result.stash : undefined;
+	}
+
+	private async getStashFromUri(uri: Uri | undefined): Promise<{ repository: Repository; stash: Stash } | undefined> {
+		if (!uri || uri.scheme !== 'git-stash') {
+			return undefined;
+		}
+
+		const stashUri = fromGitUri(uri);
+
+		// Repository
+		const repository = this.model.getRepository(stashUri.path);
+		if (!repository) {
+			return undefined;
+		}
+
+		// Stash
+		const regex = /^stash@{(\d+)}$/;
+		const match = regex.exec(stashUri.ref);
+		if (!match) {
+			return undefined;
+		}
+
+		const [, index] = match;
+		const stashes = await repository.getStashes();
+		const stash = stashes.find(stash => stash.index === parseInt(index));
+		if (!stash) {
+			return undefined;
+		}
+
+		return { repository, stash };
+	}
+
+	private async _viewStash(repository: Repository, stash: Stash): Promise<void> {
+		const stashChanges = await repository.showStash(stash.index);
+		if (!stashChanges || stashChanges.length === 0) {
+			return;
+		}
+
+		// A stash commit can have up to 3 parents:
+		// 1. The first parent is the commit that was HEAD when the stash was created.
+		// 2. The second parent is the commit that represents the index when the stash was created.
+		// 3. The third parent (when present) represents the untracked files when the stash was created.
+		const stashFirstParentCommit = stash.parents.length > 0 ? stash.parents[0] : `${stash.hash}^`;
+		const stashUntrackedFilesParentCommit = stash.parents.length === 3 ? stash.parents[2] : undefined;
+		const stashUntrackedFiles: string[] = [];
+
+		if (stashUntrackedFilesParentCommit) {
+			const untrackedFiles = await repository.getObjectFiles(stashUntrackedFilesParentCommit);
+			stashUntrackedFiles.push(...untrackedFiles.map(f => path.join(repository.root, f.file)));
+		}
+
+		const title = `Git Stash #${stash.index}: ${stash.description}`;
+		const multiDiffSourceUri = toGitUri(Uri.file(repository.root), `stash@{${stash.index}}`, { scheme: 'git-stash' });
+
+		const resources: { originalUri: Uri | undefined; modifiedUri: Uri | undefined }[] = [];
+		for (const change of stashChanges) {
+			const isChangeUntracked = !!stashUntrackedFiles.find(f => pathEquals(f, change.uri.fsPath));
+			const modifiedUriRef = !isChangeUntracked ? stash.hash : stashUntrackedFilesParentCommit ?? stash.hash;
+
+			resources.push(toMultiFileDiffEditorUris(change, stashFirstParentCommit, modifiedUriRef));
+		}
+
+		commands.executeCommand('_workbench.openMultiDiffEditor', { multiDiffSourceUri, title, resources });
 	}
 
 	@command('git.timeline.openDiff', { repository: false })
@@ -2940,18 +4802,65 @@ export class CommandCenter {
 
 		let title;
 		if ((item.previousRef === 'HEAD' || item.previousRef === '~') && item.ref === '') {
-			title = localize('git.title.workingTree', '{0} (Working Tree)', basename);
+			title = l10n.t('{0} (Working Tree)', basename);
 		}
 		else if (item.previousRef === 'HEAD' && item.ref === '~') {
-			title = localize('git.title.index', '{0} (Index)', basename);
+			title = l10n.t('{0} (Index)', basename);
 		} else {
-			title = localize('git.title.diffRefs', '{0} ({1}) ↔ {0} ({2})', basename, item.shortPreviousRef, item.shortRef);
+			title = l10n.t('{0} ({1}) \u2194 {0} ({2})', basename, item.shortPreviousRef, item.shortRef);
 		}
 
 		return {
 			command: 'vscode.diff',
-			title: localize('git.timeline.openDiffCommand', "Open Comparison"),
+			title: l10n.t('Open Comparison'),
 			arguments: [toGitUri(uri, item.previousRef), item.ref === '' ? uri : toGitUri(uri, item.ref), title, options]
+		};
+	}
+
+	@command('git.timeline.viewCommit', { repository: false })
+	async timelineViewCommit(item: TimelineItem, uri: Uri | undefined, _source: string) {
+		if (!GitTimelineItem.is(item)) {
+			return;
+		}
+
+		const cmd = await this._resolveTimelineOpenCommitCommand(
+			item, uri,
+			{
+				preserveFocus: true,
+				preview: true,
+				viewColumn: ViewColumn.Active
+			},
+		);
+		if (cmd === undefined) {
+			return undefined;
+		}
+
+		return commands.executeCommand(cmd.command, ...(cmd.arguments ?? []));
+	}
+
+	private async _resolveTimelineOpenCommitCommand(item: TimelineItem, uri: Uri | undefined, options?: TextDocumentShowOptions): Promise<Command | undefined> {
+		if (uri === undefined || uri === null || !GitTimelineItem.is(item)) {
+			return undefined;
+		}
+
+		const repository = await this.model.getRepository(uri.fsPath);
+		if (!repository) {
+			return undefined;
+		}
+
+		const commit = await repository.getCommit(item.ref);
+		const commitParentId = commit.parents.length > 0 ? commit.parents[0] : await repository.getEmptyTree();
+		const changes = await repository.diffBetweenWithStats(commitParentId, commit.hash);
+		const resources = changes.map(c => toMultiFileDiffEditorUris(c, commitParentId, commit.hash));
+
+		const title = `${item.shortRef} - ${subject(commit.message)}`;
+		const multiDiffSourceUri = Uri.from({ scheme: 'scm-history-item', path: `${repository.root}/${commitParentId}..${commit.hash}` });
+		const reveal = { modifiedUri: toGitUri(uri, commit.hash) };
+
+		return {
+			command: '_workbench.openMultiDiffEditor',
+			title: l10n.t('Open Commit'),
+			arguments: [{ multiDiffSourceUri, title, resources, reveal }, options]
 		};
 	}
 
@@ -2996,26 +4905,26 @@ export class CommandCenter {
 		const basename = path.basename(uri.fsPath);
 		let leftTitle;
 		if ((selected.previousRef === 'HEAD' || selected.previousRef === '~') && selected.ref === '') {
-			leftTitle = localize('git.title.workingTree', '{0} (Working Tree)', basename);
+			leftTitle = l10n.t('{0} (Working Tree)', basename);
 		}
 		else if (selected.previousRef === 'HEAD' && selected.ref === '~') {
-			leftTitle = localize('git.title.index', '{0} (Index)', basename);
+			leftTitle = l10n.t('{0} (Index)', basename);
 		} else {
-			leftTitle = localize('git.title.ref', '{0} ({1})', basename, selected.shortRef);
+			leftTitle = l10n.t('{0} ({1})', basename, selected.shortRef);
 		}
 
 		let rightTitle;
 		if ((item.previousRef === 'HEAD' || item.previousRef === '~') && item.ref === '') {
-			rightTitle = localize('git.title.workingTree', '{0} (Working Tree)', basename);
+			rightTitle = l10n.t('{0} (Working Tree)', basename);
 		}
 		else if (item.previousRef === 'HEAD' && item.ref === '~') {
-			rightTitle = localize('git.title.index', '{0} (Index)', basename);
+			rightTitle = l10n.t('{0} (Index)', basename);
 		} else {
-			rightTitle = localize('git.title.ref', '{0} ({1})', basename, item.shortRef);
+			rightTitle = l10n.t('{0} ({1})', basename, item.shortRef);
 		}
 
 
-		const title = localize('git.title.diff', '{0} ↔ {1}', leftTitle, rightTitle);
+		const title = l10n.t('{0} \u2194 {1}', leftTitle, rightTitle);
 		await commands.executeCommand('vscode.diff', selected.ref === '' ? uri : toGitUri(uri, selected.ref), item.ref === '' ? uri : toGitUri(uri, item.ref), title);
 	}
 
@@ -3024,13 +4933,585 @@ export class CommandCenter {
 		if (repository.rebaseCommit) {
 			await repository.rebaseAbort();
 		} else {
-			await window.showInformationMessage(localize('no rebase', "No rebase in progress."));
+			await window.showInformationMessage(l10n.t('No rebase in progress.'));
 		}
 	}
 
 	@command('git.closeAllDiffEditors', { repository: true })
 	closeDiffEditors(repository: Repository): void {
 		repository.closeDiffEditors(undefined, undefined, true);
+	}
+
+	@command('git.closeAllUnmodifiedEditors')
+	closeUnmodifiedEditors(): void {
+		const editorTabsToClose: Tab[] = [];
+
+		// Collect all modified files
+		const modifiedFiles: string[] = [];
+		for (const repository of this.model.repositories) {
+			modifiedFiles.push(...repository.indexGroup.resourceStates.map(r => r.resourceUri.fsPath));
+			modifiedFiles.push(...repository.workingTreeGroup.resourceStates.map(r => r.resourceUri.fsPath));
+			modifiedFiles.push(...repository.untrackedGroup.resourceStates.map(r => r.resourceUri.fsPath));
+			modifiedFiles.push(...repository.mergeGroup.resourceStates.map(r => r.resourceUri.fsPath));
+		}
+
+		// Collect all editor tabs that are not dirty and not modified
+		for (const tab of window.tabGroups.all.map(g => g.tabs).flat()) {
+			if (tab.isDirty) {
+				continue;
+			}
+
+			if (tab.input instanceof TabInputText || tab.input instanceof TabInputNotebook) {
+				const { uri } = tab.input;
+				if (!modifiedFiles.find(p => pathEquals(p, uri.fsPath))) {
+					editorTabsToClose.push(tab);
+				}
+			}
+		}
+
+		// Close editors
+		window.tabGroups.close(editorTabsToClose, true);
+	}
+
+	@command('git.openRepositoriesInParentFolders')
+	async openRepositoriesInParentFolders(): Promise<void> {
+		const parentRepositories: string[] = [];
+
+		const title = l10n.t('Open Repositories In Parent Folders');
+		const placeHolder = l10n.t('Pick a repository to open');
+
+		const allRepositoriesLabel = l10n.t('All Repositories');
+		const allRepositoriesQuickPickItem: QuickPickItem = { label: allRepositoriesLabel };
+		const repositoriesQuickPickItems: QuickPickItem[] = this.model.parentRepositories
+			.sort(compareRepositoryLabel).map(r => new RepositoryItem(r));
+
+		const items = this.model.parentRepositories.length === 1 ? [...repositoriesQuickPickItems] :
+			[...repositoriesQuickPickItems, { label: '', kind: QuickPickItemKind.Separator }, allRepositoriesQuickPickItem];
+
+		const repositoryItem = await window.showQuickPick(items, { title, placeHolder });
+		if (!repositoryItem) {
+			return;
+		}
+
+		if (repositoryItem === allRepositoriesQuickPickItem) {
+			// All Repositories
+			parentRepositories.push(...this.model.parentRepositories);
+		} else {
+			// One Repository
+			parentRepositories.push((repositoryItem as RepositoryItem).path);
+		}
+
+		for (const parentRepository of parentRepositories) {
+			await this.model.openParentRepository(parentRepository);
+		}
+	}
+
+	@command('git.manageUnsafeRepositories')
+	async manageUnsafeRepositories(): Promise<void> {
+		const unsafeRepositories: string[] = [];
+
+		const quickpick = window.createQuickPick();
+		quickpick.title = l10n.t('Manage Unsafe Repositories');
+		quickpick.placeholder = l10n.t('Pick a repository to mark as safe and open');
+
+		const allRepositoriesLabel = l10n.t('All Repositories');
+		const allRepositoriesQuickPickItem: QuickPickItem = { label: allRepositoriesLabel };
+		const repositoriesQuickPickItems: QuickPickItem[] = this.model.unsafeRepositories
+			.sort(compareRepositoryLabel).map(r => new RepositoryItem(r));
+
+		quickpick.items = this.model.unsafeRepositories.length === 1 ? [...repositoriesQuickPickItems] :
+			[...repositoriesQuickPickItems, { label: '', kind: QuickPickItemKind.Separator }, allRepositoriesQuickPickItem];
+
+		quickpick.show();
+		const repositoryItem = await new Promise<RepositoryItem | QuickPickItem | undefined>(
+			resolve => {
+				quickpick.onDidAccept(() => resolve(quickpick.activeItems[0]));
+				quickpick.onDidHide(() => resolve(undefined));
+			});
+		quickpick.hide();
+
+		if (!repositoryItem) {
+			return;
+		}
+
+		if (repositoryItem.label === allRepositoriesLabel) {
+			// All Repositories
+			unsafeRepositories.push(...this.model.unsafeRepositories);
+		} else {
+			// One Repository
+			unsafeRepositories.push((repositoryItem as RepositoryItem).path);
+		}
+
+		for (const unsafeRepository of unsafeRepositories) {
+			// Mark as Safe
+			await this.git.addSafeDirectory(this.model.getUnsafeRepositoryPath(unsafeRepository)!);
+
+			// Open Repository
+			await this.model.openRepository(unsafeRepository);
+			this.model.deleteUnsafeRepository(unsafeRepository);
+		}
+	}
+
+	@command('git.viewChanges', { repository: true })
+	async viewChanges(repository: Repository): Promise<void> {
+		await this._viewResourceGroupChanges(repository, repository.workingTreeGroup);
+	}
+
+	@command('git.viewStagedChanges', { repository: true })
+	async viewStagedChanges(repository: Repository): Promise<void> {
+		await this._viewResourceGroupChanges(repository, repository.indexGroup);
+	}
+
+	@command('git.viewUntrackedChanges', { repository: true })
+	async viewUnstagedChanges(repository: Repository): Promise<void> {
+		await this._viewResourceGroupChanges(repository, repository.untrackedGroup);
+	}
+
+	private async _viewResourceGroupChanges(repository: Repository, resourceGroup: GitResourceGroup): Promise<void> {
+		if (resourceGroup.resourceStates.length === 0) {
+			switch (resourceGroup.id) {
+				case 'index':
+					window.showInformationMessage(l10n.t('The repository does not have any staged changes.'));
+					break;
+				case 'workingTree':
+					window.showInformationMessage(l10n.t('The repository does not have any changes.'));
+					break;
+				case 'untracked':
+					window.showInformationMessage(l10n.t('The repository does not have any untracked changes.'));
+					break;
+			}
+			return;
+		}
+
+		await commands.executeCommand('_workbench.openScmMultiDiffEditor', {
+			title: `${repository.sourceControl.label}: ${resourceGroup.label}`,
+			repositoryUri: Uri.file(repository.root),
+			resourceGroupId: resourceGroup.id
+		});
+	}
+
+	@command('git.copyCommitId', { repository: true })
+	async copyCommitId(repository: Repository, historyItem: SourceControlHistoryItem): Promise<void> {
+		if (!repository || !historyItem) {
+			return;
+		}
+
+		env.clipboard.writeText(historyItem.id);
+	}
+
+	@command('git.copyCommitMessage', { repository: true })
+	async copyCommitMessage(repository: Repository, historyItem: SourceControlHistoryItem): Promise<void> {
+		if (!repository || !historyItem) {
+			return;
+		}
+
+		env.clipboard.writeText(historyItem.message);
+	}
+
+	@command('git.viewCommit', { repository: true })
+	async viewCommit(repository: Repository, historyItemId: string, revealUri?: Uri): Promise<void> {
+		if (!repository || !historyItemId) {
+			return;
+		}
+
+		const rootUri = Uri.file(repository.root);
+		const config = workspace.getConfiguration('git', rootUri);
+		const commitShortHashLength = config.get<number>('commitShortHashLength', 7);
+
+		const commit = await repository.getCommit(historyItemId);
+		const title = `${truncate(historyItemId, commitShortHashLength, false)} - ${subject(commit.message)}`;
+		const historyItemParentId = commit.parents.length > 0 ? commit.parents[0] : await repository.getEmptyTree();
+
+		const multiDiffSourceUri = Uri.from({ scheme: 'scm-history-item', path: `${repository.root}/${historyItemParentId}..${historyItemId}` });
+
+		const changes = await repository.diffBetweenWithStats(historyItemParentId, historyItemId);
+		const resources = changes.map(c => toMultiFileDiffEditorUris(c, historyItemParentId, historyItemId));
+		const reveal = revealUri ? { modifiedUri: toGitUri(revealUri, historyItemId) } : undefined;
+
+		await commands.executeCommand('_workbench.openMultiDiffEditor', { multiDiffSourceUri, title, resources, reveal });
+	}
+
+	@command('git.copyContentToClipboard')
+	async copyContentToClipboard(content: string): Promise<void> {
+		if (typeof content !== 'string') {
+			return;
+		}
+
+		env.clipboard.writeText(content);
+	}
+
+	@command('git.blame.toggleEditorDecoration')
+	toggleBlameEditorDecoration(): void {
+		this._toggleBlameSetting('blame.editorDecoration.enabled');
+	}
+
+	@command('git.blame.toggleStatusBarItem')
+	toggleBlameStatusBarItem(): void {
+		this._toggleBlameSetting('blame.statusBarItem.enabled');
+	}
+
+	private _toggleBlameSetting(setting: string): void {
+		const config = workspace.getConfiguration('git');
+		const enabled = config.get<boolean>(setting) === true;
+
+		config.update(setting, !enabled, true);
+	}
+
+	@command('git.repositories.createBranch', { repository: true })
+	async artifactGroupCreateBranch(repository: Repository): Promise<void> {
+		if (!repository) {
+			return;
+		}
+
+		await this._branch(repository, undefined, false);
+	}
+
+	@command('git.repositories.createTag', { repository: true })
+	async artifactGroupCreateTag(repository: Repository): Promise<void> {
+		if (!repository) {
+			return;
+		}
+
+		await this._createTag(repository);
+	}
+
+	@command('git.repositories.createWorktree', { repository: true })
+	async artifactGroupCreateWorktree(repository: Repository): Promise<void> {
+		if (!repository) {
+			return;
+		}
+
+		await this._createWorktree(repository);
+	}
+
+	@command('git.repositories.checkout', { repository: true })
+	async artifactCheckout(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		await this._checkout(repository, { treeish: artifact.name });
+	}
+
+	@command('git.repositories.checkoutDetached', { repository: true })
+	async artifactCheckoutDetached(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		await this._checkout(repository, { treeish: artifact.name, detached: true });
+	}
+
+	@command('git.repositories.merge', { repository: true })
+	async artifactMerge(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		await repository.merge(artifact.id);
+	}
+
+	@command('git.repositories.rebase', { repository: true })
+	async artifactRebase(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		await repository.rebase(artifact.id);
+	}
+
+	@command('git.repositories.createFrom', { repository: true })
+	async artifactCreateFrom(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		await this._branch(repository, undefined, false, artifact.id);
+	}
+
+	@command('git.repositories.compareRef', { repository: true })
+	async artifactCompareWith(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		const config = workspace.getConfiguration('git');
+		const showRefDetails = config.get<boolean>('showReferenceDetails') === true;
+
+		const getRefPicks = async () => {
+			const refs = await repository.getRefs({ includeCommitDetails: showRefDetails });
+			const processors = [
+				new RefProcessor(RefType.Head, BranchItem),
+				new RefProcessor(RefType.RemoteHead, BranchItem),
+				new RefProcessor(RefType.Tag, BranchItem)
+			];
+
+			const itemsProcessor = new RefItemsProcessor(repository, processors);
+			return itemsProcessor.processRefs(refs);
+		};
+
+		const placeHolder = l10n.t('Select a reference to compare with');
+		const sourceRef = await this.pickRef(getRefPicks(), placeHolder);
+
+		if (!(sourceRef instanceof BranchItem) || !sourceRef.ref.commit) {
+			return;
+		}
+
+		await this._openChangesBetweenRefs(
+			repository,
+			{
+				id: sourceRef.ref.commit,
+				displayId: sourceRef.ref.name
+			},
+			{
+				id: artifact.id,
+				displayId: artifact.name
+			});
+	}
+
+	private async _createTag(repository: Repository, ref?: string): Promise<void> {
+		const inputTagName = await window.showInputBox({
+			placeHolder: l10n.t('Tag name'),
+			prompt: l10n.t('Please provide a tag name'),
+			ignoreFocusOut: true
+		});
+
+		if (!inputTagName) {
+			return;
+		}
+
+		const inputMessage = await window.showInputBox({
+			placeHolder: l10n.t('Message'),
+			prompt: l10n.t('Please provide a message to annotate the tag'),
+			ignoreFocusOut: true
+		});
+
+		const name = inputTagName.replace(/^\.|\/\.|\.\.|~|\^|:|\/$|\.lock$|\.lock\/|\\|\*|\s|^\s*$|\.$/g, '-');
+		await repository.tag({ name, message: inputMessage, ref });
+	}
+
+	@command('git.repositories.deleteBranch', { repository: true })
+	async artifactDeleteBranch(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		const message = l10n.t('Are you sure you want to delete branch "{0}"? This action will permanently remove the branch reference from the repository.', artifact.name);
+		const yes = l10n.t('Delete Branch');
+		const result = await window.showWarningMessage(message, { modal: true }, yes);
+		if (result !== yes) {
+			return;
+		}
+
+		await this._deleteBranch(repository, undefined, artifact.name, { remote: false });
+	}
+
+	@command('git.repositories.deleteTag', { repository: true })
+	async artifactDeleteTag(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		const message = l10n.t('Are you sure you want to delete tag "{0}"? This action will permanently remove the tag reference from the repository.', artifact.name);
+		const yes = l10n.t('Delete Tag');
+		const result = await window.showWarningMessage(message, { modal: true }, yes);
+		if (result !== yes) {
+			return;
+		}
+
+		await repository.deleteTag(artifact.name);
+	}
+
+	@command('git.repositories.stashView', { repository: true })
+	async artifactStashView(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		// Extract stash index from artifact id
+		const regex = /^stash@\{(\d+)\}$/;
+		const match = regex.exec(artifact.id);
+		if (!match) {
+			return;
+		}
+
+		const stashes = await repository.getStashes();
+		const stash = stashes.find(s => s.index === parseInt(match[1]));
+		if (!stash) {
+			return;
+		}
+
+		await this._viewStash(repository, stash);
+	}
+
+	@command('git.repositories.stashApply', { repository: true })
+	async artifactStashApply(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		// Extract stash index from artifact id (format: "stash@{index}")
+		const regex = /^stash@\{(\d+)\}$/;
+		const match = regex.exec(artifact.id);
+		if (!match) {
+			return;
+		}
+
+		const stashIndex = parseInt(match[1]);
+		await repository.applyStash(stashIndex);
+	}
+
+	@command('git.repositories.stashPop', { repository: true })
+	async artifactStashPop(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		// Extract stash index from artifact id (format: "stash@{index}")
+		const regex = /^stash@\{(\d+)\}$/;
+		const match = regex.exec(artifact.id);
+		if (!match) {
+			return;
+		}
+
+		const stashIndex = parseInt(match[1]);
+		await repository.popStash(stashIndex);
+	}
+
+	@command('git.repositories.stashDrop', { repository: true })
+	async artifactStashDrop(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		// Extract stash index from artifact id
+		const regex = /^stash@\{(\d+)\}$/;
+		const match = regex.exec(artifact.id);
+		if (!match) {
+			return;
+		}
+
+		await this._stashDrop(repository, parseInt(match[1]), artifact.name);
+	}
+
+	@command('git.repositories.openWorktree', { repository: true })
+	async artifactOpenWorktree(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		const uri = Uri.file(artifact.id);
+		await commands.executeCommand('vscode.openFolder', uri, { forceReuseWindow: true });
+	}
+
+	@command('git.repositories.openWorktreeInNewWindow', { repository: true })
+	async artifactOpenWorktreeInNewWindow(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		const uri = Uri.file(artifact.id);
+		await commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: true });
+	}
+
+	@command('git.repositories.deleteWorktree', { repository: true })
+	async artifactDeleteWorktree(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		await repository.deleteWorktree(artifact.id);
+	}
+
+	@command('git.repositories.worktreeCopyBranchName', { repository: true })
+	async artifactWorktreeCopyBranchName(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		const worktrees = await repository.getWorktreeDetails();
+		const worktree = worktrees.find(w => w.path === artifact.id);
+		if (!worktree || worktree.detached) {
+			return;
+		}
+
+		env.clipboard.writeText(worktree.ref.substring(11));
+	}
+
+	@command('git.repositories.worktreeCopyCommitHash', { repository: true })
+	async artifactWorktreeCopyCommitHash(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		const worktrees = await repository.getWorktreeDetails();
+		const worktree = worktrees.find(w => w.path === artifact.id);
+		if (!worktree?.commitDetails) {
+			return;
+		}
+
+		env.clipboard.writeText(worktree.commitDetails.hash);
+	}
+
+	@command('git.repositories.worktreeCopyPath', { repository: true })
+	async artifactWorktreeCopyPath(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		env.clipboard.writeText(artifact.id);
+	}
+
+	@command('git.repositories.copyCommitHash', { repository: true })
+	async artifactCopyCommitHash(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		const commit = await repository.getCommit(artifact.id);
+		env.clipboard.writeText(commit.hash);
+	}
+
+	@command('git.repositories.copyBranchName', { repository: true })
+	async artifactCopyBranchName(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		env.clipboard.writeText(artifact.name);
+	}
+
+	@command('git.repositories.copyTagName', { repository: true })
+	async artifactCopyTagName(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		env.clipboard.writeText(artifact.name);
+	}
+
+	@command('git.repositories.copyStashName', { repository: true })
+	async artifactCopyStashName(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact) {
+			return;
+		}
+
+		env.clipboard.writeText(artifact.name);
+	}
+
+	@command('git.repositories.stashCopyBranchName', { repository: true })
+	async artifactStashCopyBranchName(repository: Repository, artifact: SourceControlArtifact): Promise<void> {
+		if (!repository || !artifact?.description) {
+			return;
+		}
+
+		const stashes = await repository.getStashes();
+		const stash = stashes.find(s => artifact.id === `stash@{${s.index}}`);
+		if (!stash?.branchName) {
+			return;
+		}
+
+		env.clipboard.writeText(stash.branchName);
 	}
 
 	private createCommand(id: string, key: string, method: Function, options: ScmCommandOptions): (...args: any[]) => any {
@@ -3046,10 +5527,8 @@ export class CommandCenter {
 
 				if (repository) {
 					repositoryPromise = Promise.resolve(repository);
-				} else if (this.model.repositories.length === 1) {
-					repositoryPromise = Promise.resolve(this.model.repositories[0]);
 				} else {
-					repositoryPromise = this.model.pickRepository();
+					repositoryPromise = this.model.pickRepository(options.repositoryFilter);
 				}
 
 				result = repositoryPromise.then(repository => {
@@ -3064,12 +5543,12 @@ export class CommandCenter {
 			/* __GDPR__
 				"git.command" : {
 					"owner": "lszomoru",
-					"command" : { "classification": "SystemMetaData", "purpose": "FeatureInsight" }
+					"command" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "The command id of the command being executed" }
 				}
 			*/
 			this.telemetryReporter.sendTelemetryEvent('git.command', { command: id });
 
-			return result.catch(async err => {
+			return result.catch(err => {
 				const options: MessageOptions = {
 					modal: true
 				};
@@ -3078,11 +5557,11 @@ export class CommandCenter {
 				let type: 'error' | 'warning' | 'information' = 'error';
 
 				const choices = new Map<string, () => void>();
-				const openOutputChannelChoice = localize('open git log', "Open Git Log");
-				const outputChannelLogger = this.outputChannelLogger;
-				choices.set(openOutputChannelChoice, () => outputChannelLogger.showOutputChannel());
+				const openOutputChannelChoice = l10n.t('Open Git Log');
+				const outputChannelLogger = this.logger;
+				choices.set(openOutputChannelChoice, () => outputChannelLogger.show());
 
-				const showCommandOutputChoice = localize('show command output', "Show Command Output");
+				const showCommandOutputChoice = l10n.t('Show Command Output');
 				if (err.stderr) {
 					choices.set(showCommandOutputChoice, async () => {
 						const timestamp = new Date().getTime();
@@ -3109,19 +5588,27 @@ export class CommandCenter {
 
 				switch (err.gitErrorCode) {
 					case GitErrorCodes.DirtyWorkTree:
-						message = localize('clean repo', "Please clean your repository working tree before checkout.");
+						message = l10n.t('Please clean your repository working tree before checkout.');
 						break;
 					case GitErrorCodes.PushRejected:
-						message = localize('cant push', "Can't push refs to remote. Try running 'Pull' first to integrate your changes.");
+						message = l10n.t('Can\'t push refs to remote. Try running "Pull" first to integrate your changes.');
+						break;
+					case GitErrorCodes.ForcePushWithLeaseRejected:
+					case GitErrorCodes.ForcePushWithLeaseIfIncludesRejected:
+						message = l10n.t('Can\'t force push refs to remote. The tip of the remote-tracking branch has been updated since the last checkout. Try running "Pull" first to pull the latest changes from the remote branch first.');
 						break;
 					case GitErrorCodes.Conflict:
-						message = localize('merge conflicts', "There are merge conflicts. Resolve them before committing.");
+						message = l10n.t('There are merge conflicts. Please resolve them before committing your changes.');
 						type = 'warning';
+						choices.clear();
+						choices.set(l10n.t('Show Changes'), () => commands.executeCommand('workbench.view.scm'));
 						options.modal = false;
 						break;
 					case GitErrorCodes.StashConflict:
-						message = localize('stash merge conflicts', "There were merge conflicts while applying the stash.");
+						message = l10n.t('There are merge conflicts while applying the stash. Please resolve them before committing your changes.');
 						type = 'warning';
+						choices.clear();
+						choices.set(l10n.t('Show Changes'), () => commands.executeCommand('workbench.view.scm'));
 						options.modal = false;
 						break;
 					case GitErrorCodes.AuthenticationFailed: {
@@ -3129,32 +5616,43 @@ export class CommandCenter {
 						const match = regex.exec(err.stderr || String(err));
 
 						message = match
-							? localize('auth failed specific', "Failed to authenticate to git remote:\n\n{0}", match[1])
-							: localize('auth failed', "Failed to authenticate to git remote.");
+							? l10n.t('Failed to authenticate to git remote:\n\n{0}', match[1])
+							: l10n.t('Failed to authenticate to git remote.');
 						break;
 					}
 					case GitErrorCodes.NoUserNameConfigured:
 					case GitErrorCodes.NoUserEmailConfigured:
-						message = localize('missing user info', "Make sure you configure your 'user.name' and 'user.email' in git.");
-						choices.set(localize('learn more', "Learn More"), () => commands.executeCommand('vscode.open', Uri.parse('https://aka.ms/vscode-setup-git')));
+						message = l10n.t('Make sure you configure your "user.name" and "user.email" in git.');
+						choices.set(l10n.t('Learn More'), () => commands.executeCommand('vscode.open', Uri.parse('https://aka.ms/vscode-setup-git')));
 						break;
 					case GitErrorCodes.EmptyCommitMessage:
-						message = localize('empty commit', "Commit operation was cancelled due to empty commit message.");
+						message = l10n.t('Commit operation was cancelled due to empty commit message.');
 						choices.clear();
 						type = 'information';
 						options.modal = false;
 						break;
+					case GitErrorCodes.CherryPickEmpty:
+						message = l10n.t('The changes are already present in the current branch.');
+						choices.clear();
+						type = 'information';
+						options.modal = false;
+						break;
+					case GitErrorCodes.CherryPickConflict:
+						message = l10n.t('There were merge conflicts while cherry picking the changes. Resolve the conflicts before committing them.');
+						type = 'warning';
+						choices.set(l10n.t('Show Changes'), () => commands.executeCommand('workbench.view.scm'));
+						options.modal = false;
+						break;
 					default: {
-						const hint = (err.stderr || err.message || String(err))
+						const hintLines = (err.stderr || err.stdout || err.message || String(err))
 							.replace(/^error: /mi, '')
 							.replace(/^> husky.*$/mi, '')
 							.split(/[\r\n]/)
-							.filter((line: string) => !!line)
-						[0];
+							.filter((line: string) => !!line);
 
-						message = hint
-							? localize('git error details', "Git: {0}", hint)
-							: localize('git error', "Git error");
+						message = hintLines.length > 0
+							? l10n.t('Git: {0}', err.stdout ? hintLines[hintLines.length - 1] : hintLines[0])
+							: l10n.t('Git error');
 
 						break;
 					}
@@ -3165,42 +5663,49 @@ export class CommandCenter {
 					return;
 				}
 
-				let result: string | undefined;
-				const allChoices = Array.from(choices.keys());
-
-				switch (type) {
-					case 'error':
-						result = await window.showErrorMessage(message, options, ...allChoices);
-						break;
-					case 'warning':
-						result = await window.showWarningMessage(message, options, ...allChoices);
-						break;
-					case 'information':
-						result = await window.showInformationMessage(message, options, ...allChoices);
-						break;
-				}
-
-				if (result) {
-					const resultFn = choices.get(result);
-
-					resultFn?.();
-				}
+				// We explicitly do not await this promise, because we do not
+				// want the command execution to be stuck waiting for the user
+				// to take action on the notification.
+				this.showErrorNotification(type, message, options, choices);
 			});
 		};
 
 		// patch this object, so people can call methods directly
-		(this as any)[key] = result;
+		(this as Record<string, unknown>)[key] = result;
 
 		return result;
+	}
+
+	private async showErrorNotification(type: 'error' | 'warning' | 'information', message: string, options: MessageOptions, choices: Map<string, () => void>): Promise<void> {
+		let result: string | undefined;
+		const allChoices = Array.from(choices.keys());
+
+		switch (type) {
+			case 'error':
+				result = await window.showErrorMessage(message, options, ...allChoices);
+				break;
+			case 'warning':
+				result = await window.showWarningMessage(message, options, ...allChoices);
+				break;
+			case 'information':
+				result = await window.showInformationMessage(message, options, ...allChoices);
+				break;
+		}
+
+		if (result) {
+			const resultFn = choices.get(result);
+
+			resultFn?.();
+		}
 	}
 
 	private getSCMResource(uri?: Uri): Resource | undefined {
 		uri = uri ? uri : (window.activeTextEditor && window.activeTextEditor.document.uri);
 
-		this.outputChannelLogger.logDebug(`git.getSCMResource.uri ${uri && uri.toString()}`);
+		this.logger.debug(`[CommandCenter][getSCMResource] git.getSCMResource.uri: ${uri && uri.toString()}`);
 
 		for (const r of this.model.repositories.map(r => r.root)) {
-			this.outputChannelLogger.logDebug(`repo root ${r}`);
+			this.logger.debug(`[CommandCenter][getSCMResource] repo root: ${r}`);
 		}
 
 		if (!uri) {
@@ -3221,7 +5726,8 @@ export class CommandCenter {
 			}
 
 			return repository.workingTreeGroup.resourceStates.filter(r => r.resourceUri.toString() === uriString)[0]
-				|| repository.indexGroup.resourceStates.filter(r => r.resourceUri.toString() === uriString)[0];
+				|| repository.indexGroup.resourceStates.filter(r => r.resourceUri.toString() === uriString)[0]
+				|| repository.mergeGroup.resourceStates.filter(r => r.resourceUri.toString() === uriString)[0];
 		}
 		return undefined;
 	}

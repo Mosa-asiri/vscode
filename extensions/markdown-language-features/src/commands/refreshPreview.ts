@@ -10,13 +10,19 @@ import { MarkdownPreviewManager } from '../preview/previewManager';
 export class RefreshPreviewCommand implements Command {
 	public readonly id = 'markdown.preview.refresh';
 
+	readonly #webviewManager: MarkdownPreviewManager;
+	readonly #engine: MarkdownItEngine;
+
 	public constructor(
-		private readonly webviewManager: MarkdownPreviewManager,
-		private readonly engine: MarkdownItEngine
-	) { }
+		webviewManager: MarkdownPreviewManager,
+		engine: MarkdownItEngine
+	) {
+		this.#webviewManager = webviewManager;
+		this.#engine = engine;
+	}
 
 	public execute() {
-		this.engine.cleanCache();
-		this.webviewManager.refresh();
+		this.#engine.cleanCache();
+		this.#webviewManager.refresh();
 	}
 }

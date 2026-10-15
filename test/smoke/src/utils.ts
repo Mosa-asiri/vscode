@@ -19,25 +19,6 @@ export function itRepeat(n: number, description: string, callback: (this: Contex
 	}
 }
 
-/**
- * Defines a test-case that will run but will be skips it if it throws an exception. This is useful
- * to get some runs in CI when trying to stabilize a flaky test, without failing the build. Note
- * that this only works if something inside the test throws, so a test's overall timeout won't work
- * but throwing due to a polling timeout will.
- * @param title The test-case title.
- * @param callback The test-case callback.
- */
-export function itSkipOnFail(title: string, callback: (this: Context) => any): void {
-	it(title, function () {
-		return Promise.resolve().then(() => {
-			return callback.apply(this, arguments);
-		}).catch(e => {
-			console.warn(`Test "${title}" failed but was marked as skip on fail:`, e);
-			this.skip();
-		});
-	});
-}
-
 export function installAllHandlers(logger: Logger, optionsTransform?: (opts: ApplicationOptions) => ApplicationOptions) {
 	installDiagnosticsHandler(logger);
 	installAppBeforeHandler(optionsTransform);
@@ -129,22 +110,22 @@ export function createApp(options: ApplicationOptions, optionsTransform?: (opts:
 		options = optionsTransform({ ...options });
 	}
 
-	const app = new Application({
-		...options,
-		userDataDir: getRandomUserDataDir(options)
-	});
+	const config = options.userDataDir
+		? { ...options, userDataDir: getRandomUserDataDir(options.userDataDir) }
+		: options;
+	const app = new Application(config);
 
 	return app;
 }
 
-export function getRandomUserDataDir(options: ApplicationOptions): string {
+export function getRandomUserDataDir(baseUserDataDir: string): string {
 
 	// Pick a random user data dir suffix that is not
 	// too long to not run into max path length issues
 	// https://github.com/microsoft/vscode/issues/34988
 	const userDataPathSuffix = [...Array(8)].map(() => Math.random().toString(36)[3]).join('');
 
-	return options.userDataDir.concat(`-${userDataPathSuffix}`);
+	return baseUserDataDir.concat(`-${userDataPathSuffix}`);
 }
 
 export function timeout(i: number) {
@@ -195,7 +176,7 @@ export async function retry<T>(task: ITask<Promise<T>>, delay: number, retries: 
 
 			return await task();
 		} catch (error) {
-			lastError = error;
+			lastError = error as Error;
 
 			await timeout(delay);
 		}

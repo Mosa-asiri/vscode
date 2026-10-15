@@ -5,7 +5,6 @@
 
 .monaco-editor .debug-hover-widget {
 	position: absolute;
-	margin-top: -1px;
 	z-index: 50;
 	animation-duration: 0.15s;
 	animation-name: fadeIn;
@@ -13,6 +12,8 @@
 	-webkit-user-select: text;
 	word-break: break-all;
 	white-space: pre;
+	border-radius: var(--vscode-cornerRadius-large);
+	box-shadow: var(--vscode-shadow-lg);
 }
 
 .monaco-editor .debug-hover-widget .complex-value {

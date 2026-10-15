@@ -3,111 +3,58 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Comparator, compareBy, numberComparator } from 'vs/base/common/arrays';
-import { BugIndicatingError } from 'vs/base/common/errors';
-import { Constants } from 'vs/base/common/uint';
-import { Range } from 'vs/editor/common/core/range';
-import { ITextModel } from 'vs/editor/common/model';
+import { Constants } from '../../../../../base/common/uint.js';
+import { Range } from '../../../../../editor/common/core/range.js';
+import { LineRange } from '../../../../../editor/common/core/ranges/lineRange.js';
+import { ITextModel } from '../../../../../editor/common/model.js';
 
-export class LineRange {
-	public static readonly compareByStart: Comparator<LineRange> = compareBy(l => l.startLineNumber, numberComparator);
-
-	public static join(ranges: LineRange[]): LineRange | undefined {
-		if (ranges.length === 0) {
-			return undefined;
-		}
-
-		let startLineNumber = Number.MAX_SAFE_INTEGER;
-		let endLineNumber = 0;
-		for (const range of ranges) {
-			startLineNumber = Math.min(startLineNumber, range.startLineNumber);
-			endLineNumber = Math.max(endLineNumber, range.startLineNumber + range.lineCount);
-		}
-		return new LineRange(startLineNumber, endLineNumber - startLineNumber);
+/**
+ * TODO: Deprecate in favor of LineRange!
+ */
+export class MergeEditorLineRange extends LineRange {
+	static fromLineNumbers(startLineNumber: number, endExclusiveLineNumber: number): MergeEditorLineRange {
+		return MergeEditorLineRange.fromLength(startLineNumber, endExclusiveLineNumber - startLineNumber);
 	}
 
-	static fromLineNumbers(startLineNumber: number, endExclusiveLineNumber: number): LineRange {
-		return new LineRange(startLineNumber, endExclusiveLineNumber - startLineNumber);
+	static fromLength(startLineNumber: number, length: number): MergeEditorLineRange {
+		return new MergeEditorLineRange(startLineNumber, startLineNumber + length);
 	}
 
-	constructor(
-		public readonly startLineNumber: number,
-		public readonly lineCount: number
-	) {
-		if (lineCount < 0) {
-			throw new BugIndicatingError();
-		}
+	public override join(other: MergeEditorLineRange): MergeEditorLineRange {
+		return MergeEditorLineRange.fromLineNumbers(Math.min(this.startLineNumber, other.startLineNumber), Math.max(this.endLineNumberExclusive, other.endLineNumberExclusive));
 	}
 
-	public join(other: LineRange): LineRange {
-		return new LineRange(Math.min(this.startLineNumber, other.startLineNumber), Math.max(this.endLineNumberExclusive, other.endLineNumberExclusive) - this.startLineNumber);
+	public isAfter(range: MergeEditorLineRange): boolean {
+		return this.startLineNumber >= range.endLineNumberExclusive;
 	}
 
-	public get endLineNumberExclusive(): number {
-		return this.startLineNumber + this.lineCount;
+	public isBefore(range: MergeEditorLineRange): boolean {
+		return range.startLineNumber >= this.endLineNumberExclusive;
 	}
 
-	public get isEmpty(): boolean {
-		return this.lineCount === 0;
+	public override delta(lineDelta: number): MergeEditorLineRange {
+		return MergeEditorLineRange.fromLength(this.startLineNumber + lineDelta, this.length);
 	}
 
-	/**
-	 * Returns false if there is at least one line between `this` and `other`.
-	*/
-	public touches(other: LineRange): boolean {
-		return (
-			this.endLineNumberExclusive >= other.startLineNumber &&
-			other.endLineNumberExclusive >= this.startLineNumber
-		);
+	public deltaEnd(delta: number): MergeEditorLineRange {
+		return MergeEditorLineRange.fromLength(this.startLineNumber, this.length + delta);
 	}
 
-	public isAfter(modifiedRange: LineRange): boolean {
-		return this.startLineNumber >= modifiedRange.endLineNumberExclusive;
-	}
-
-	public delta(lineDelta: number): LineRange {
-		return new LineRange(this.startLineNumber + lineDelta, this.lineCount);
-	}
-
-	public toString() {
-		return `[${this.startLineNumber},${this.endLineNumberExclusive})`;
-	}
-
-	public equals(originalRange: LineRange) {
-		return this.startLineNumber === originalRange.startLineNumber && this.lineCount === originalRange.lineCount;
-	}
-
-	public contains(lineNumber: number): boolean {
-		return this.startLineNumber <= lineNumber && lineNumber < this.endLineNumberExclusive;
-	}
-
-	public deltaEnd(delta: number): LineRange {
-		return new LineRange(this.startLineNumber, this.lineCount + delta);
-	}
-
-	public deltaStart(lineDelta: number): LineRange {
-		return new LineRange(this.startLineNumber + lineDelta, this.lineCount - lineDelta);
+	public deltaStart(lineDelta: number): MergeEditorLineRange {
+		return MergeEditorLineRange.fromLength(this.startLineNumber + lineDelta, this.length - lineDelta);
 	}
 
 	public getLines(model: ITextModel): string[] {
-		const result = new Array(this.lineCount);
-		for (let i = 0; i < this.lineCount; i++) {
+		const result = new Array(this.length);
+		for (let i = 0; i < this.length; i++) {
 			result[i] = model.getLineContent(this.startLineNumber + i);
 		}
 		return result;
 	}
 
-	public containsRange(range: LineRange): boolean {
-		return this.startLineNumber <= range.startLineNumber && range.endLineNumberExclusive <= this.endLineNumberExclusive;
-	}
-
-	public toRange(): Range {
-		return new Range(this.startLineNumber, 1, this.endLineNumberExclusive, 1);
-	}
-
-	public toInclusiveRange(): Range | undefined {
+	public toInclusiveRangeOrEmpty(): Range {
 		if (this.isEmpty) {
-			return undefined;
+			return new Range(this.startLineNumber, 1, this.startLineNumber, 1);
 		}
 		return new Range(this.startLineNumber, 1, this.endLineNumberExclusive - 1, Constants.MAX_SAFE_SMALL_INTEGER);
 	}

@@ -3,37 +3,60 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { VSBuffer } from 'vs/base/common/buffer';
-import { URI, UriComponents } from 'vs/base/common/uri';
-import { ExtensionIdentifier, IExtensionDescription } from 'vs/platform/extensions/common/extensions';
-import { LogLevel } from 'vs/platform/log/common/log';
-import { IRemoteConnectionData } from 'vs/platform/remote/common/remoteAuthorityResolver';
-import { ITelemetryInfo } from 'vs/platform/telemetry/common/telemetry';
+import { VSBuffer } from '../../../../base/common/buffer.js';
+import { URI, UriComponents, UriDto } from '../../../../base/common/uri.js';
+import { ExtensionIdentifier, IExtensionDescription } from '../../../../platform/extensions/common/extensions.js';
+import { ILoggerResource, LogLevel } from '../../../../platform/log/common/log.js';
+import { IRemoteConnectionData } from '../../../../platform/remote/common/remoteAuthorityResolver.js';
+
+export interface IExtensionDescriptionSnapshot {
+	readonly versionId: number;
+	readonly allExtensions: IExtensionDescription[];
+	readonly activationEvents: { [extensionId: string]: string[] };
+	readonly myExtensions: ExtensionIdentifier[];
+}
 
 export interface IExtensionDescriptionDelta {
+	readonly versionId: number;
 	readonly toRemove: ExtensionIdentifier[];
 	readonly toAdd: IExtensionDescription[];
+	readonly addActivationEvents: { [extensionId: string]: string[] };
 	readonly myToRemove: ExtensionIdentifier[];
 	readonly myToAdd: ExtensionIdentifier[];
 }
 
 export interface IExtensionHostInitData {
 	version: string;
+	quality: string | undefined;
 	commit?: string;
-	parentPid: number;
+	date?: string;
+	/**
+	 * When set to `0`, no polling for the parent process still running will happen.
+	 */
+	parentPid: number | 0;
 	environment: IEnvironment;
 	workspace?: IStaticWorkspaceData | null;
-	allExtensions: IExtensionDescription[];
-	myExtensions: ExtensionIdentifier[];
-	telemetryInfo: ITelemetryInfo;
+	extensions: IExtensionDescriptionSnapshot;
+	nlsBaseUrl?: URI;
+	telemetryInfo: {
+		readonly sessionId: string;
+		readonly machineId: string;
+		readonly sqmId: string;
+		readonly devDeviceId: string;
+		readonly firstSessionDate: string;
+		readonly msftInternal?: boolean;
+	};
+	remoteExtensionTips?: { readonly [remoteName: string]: unknown };
+	virtualWorkspaceExtensionTips?: { readonly [remoteName: string]: unknown };
 	logLevel: LogLevel;
+	loggers: UriDto<ILoggerResource>[];
 	logsLocation: URI;
-	logFile: URI;
 	autoStart: boolean;
 	remote: { isRemote: boolean; authority: string | undefined; connectionData: IRemoteConnectionData | null };
 	consoleForward: { includeStack: boolean; logNative: boolean };
 	uiKind: UIKind;
 	messagePorts?: ReadonlyMap<string, MessagePortLike>;
+	handle?: string;
 }
 
 export interface IEnvironment {
@@ -42,13 +65,17 @@ export interface IEnvironment {
 	appHost: string;
 	appRoot?: URI;
 	appLanguage: string;
+	isExtensionTelemetryLoggingOnly: boolean;
 	appUriScheme: string;
+	isPortable?: boolean;
 	extensionDevelopmentLocationURI?: URI[];
 	extensionTestsLocationURI?: URI;
 	globalStorageHome: URI;
 	workspaceStorageHome: URI;
 	useHostProxy?: boolean;
 	skipWorkspaceStorageLock?: boolean;
+	extensionLogLevel?: [string, LogLevel][];
+	isSessionsWindow?: boolean;
 }
 
 export interface IStaticWorkspaceData {
@@ -60,9 +87,9 @@ export interface IStaticWorkspaceData {
 }
 
 export interface MessagePortLike {
-	postMessage(message: any, transfer?: any[]): void;
-	addEventListener(type: 'message', listener: (e: any) => any): void;
-	removeEventListener(type: 'message', listener: (e: any) => any): void;
+	postMessage(message: unknown, transfer?: Transferable[]): void;
+	addEventListener(type: 'message', listener: (e: MessageEvent<unknown>) => unknown): void;
+	removeEventListener(type: 'message', listener: (e: MessageEvent<unknown>) => unknown): void;
 	start(): void;
 }
 

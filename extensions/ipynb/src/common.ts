@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as nbformat from '@jupyterlab/nbformat';
+import type * as nbformat from '@jupyterlab/nbformat';
 
 /**
  * Metadata we store in VS Code cell output items.
@@ -44,7 +44,7 @@ export interface CellOutputMetadata {
 
 /**
  * Metadata we store in VS Code cells.
- * This contains the original metadata from the Jupyuter cells.
+ * This contains the original metadata from the Jupyter cells.
  */
 export interface CellMetadata {
 	/**
@@ -58,5 +58,43 @@ export interface CellMetadata {
 	/**
 	 * Stores cell metadata.
 	 */
-	metadata?: Partial<nbformat.ICellMetadata>;
+	metadata?: Partial<nbformat.ICellMetadata> & { vscode?: { languageId?: string } };
+	/**
+	 * The code cell's prompt number. Will be null if the cell has not been run.
+	 */
+	execution_count?: number | null;
+}
+
+
+
+type KeysOfUnionType<T> = T extends T ? keyof T : never;
+type FilterType<T, TTest> = T extends TTest ? T : never;
+type MakeOptionalAndBool<T extends object> = { [K in keyof T]?: boolean };
+
+/**
+ * Type guard that checks if an object has specific keys and narrows the type accordingly.
+ *
+ * @param x - The object to check
+ * @param key - An object with boolean values indicating which keys to check for
+ * @returns true if all specified keys exist in the object, false otherwise
+ *
+ * @example
+ * ```typescript
+ * type A = { a: string };
+ * type B = { b: number };
+ * const obj: A | B = getObject();
+ *
+ * if (hasKey(obj, { a: true })) {
+ *   // obj is now narrowed to type A
+ *   console.log(obj.a);
+ * }
+ * ```
+ */
+export function hasKey<T extends object, TKeys>(x: T, key: TKeys & MakeOptionalAndBool<T>): x is FilterType<T, { [K in KeysOfUnionType<T> & keyof TKeys]: unknown }> {
+	for (const k in key) {
+		if (!(k in x)) {
+			return false;
+		}
+	}
+	return true;
 }

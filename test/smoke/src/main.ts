@@ -8,13 +8,11 @@ import { gracefulify } from 'graceful-fs';
 import * as cp from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
-import * as minimist from 'minimist';
-import * as rimraf from 'rimraf';
-import * as mkdirp from 'mkdirp';
+import minimist from 'minimist';
 import * as vscodetest from '@vscode/test-electron';
 import fetch from 'node-fetch';
-import { Quality, MultiLogger, Logger, ConsoleLogger, FileLogger, measureAndLog, getDevElectronPath, getBuildElectronPath, getBuildVersion } from '../../automation';
-import { retry, timeout } from './utils';
+import { Quality, MultiLogger, Logger, ConsoleLogger, FileLogger, measureAndLog, getDevElectronPath, getBuildElectronPath, getBuildVersion, ApplicationOptions } from '../../automation';
+import { retry } from './utils';
 
 import { setup as setupDataLossTests } from './areas/workbench/data-loss.test';
 import { setup as setupPreferencesTests } from './areas/preferences/preferences.test';
@@ -23,11 +21,14 @@ import { setup as setupNotebookTests } from './areas/notebook/notebook.test';
 import { setup as setupLanguagesTests } from './areas/languages/languages.test';
 import { setup as setupStatusbarTests } from './areas/statusbar/statusbar.test';
 import { setup as setupExtensionTests } from './areas/extensions/extensions.test';
+import { setup as setupExtensionHostRestartTests } from './areas/extensions/extension-host-restart.test';
 import { setup as setupMultirootTests } from './areas/multiroot/multiroot.test';
 import { setup as setupLocalizationTests } from './areas/workbench/localization.test';
 import { setup as setupLaunchTests } from './areas/workbench/launch.test';
 import { setup as setupTerminalTests } from './areas/terminal/terminal.test';
 import { setup as setupTaskTests } from './areas/task/task.test';
+import { setup as setupChatTests } from './areas/chat/chatDisabled.test';
+import { setup as setupAccessibilityTests } from './areas/accessibility/accessibility.test';
 
 const rootPath = path.join(__dirname, '..', '..', '..');
 
@@ -59,7 +60,7 @@ const opts = minimist(args, {
 	tracing?: boolean;
 	build?: string;
 	'stable-build'?: string;
-	browser?: string;
+	browser?: 'chromium' | 'webkit' | 'firefox' | 'chromium-msedge' | 'chromium-chrome';
 	electronArgs?: string;
 };
 
@@ -104,8 +105,8 @@ function createLogger(): Logger {
 	}
 
 	// Prepare logs rot path
-	fs.rmSync(logsRootPath, { recursive: true, force: true, maxRetries: 3 });
-	mkdirp.sync(logsRootPath);
+	fs.rmSync(logsRootPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
+	fs.mkdirSync(logsRootPath, { recursive: true });
 
 	// Always log to log file
 	loggers.push(new FileLogger(path.join(logsRootPath, 'smoke-test-runner.log')));
@@ -119,23 +120,33 @@ try {
 	logger.log(`Error enabling graceful-fs: ${error}`);
 }
 
-const testDataPath = path.join(os.tmpdir(), 'vscsmoke');
-if (fs.existsSync(testDataPath)) {
-	rimraf.sync(testDataPath);
+function getTestTypeSuffix(): string {
+	if (opts.web) {
+		return 'browser';
+	} else if (opts.remote) {
+		return 'remote';
+	} else {
+		return 'electron';
+	}
 }
-mkdirp.sync(testDataPath);
+
+const testDataPath = path.join(os.tmpdir(), `vscsmoke-${getTestTypeSuffix()}`);
+if (fs.existsSync(testDataPath)) {
+	fs.rmSync(testDataPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
+}
+fs.mkdirSync(testDataPath, { recursive: true });
 process.once('exit', () => {
 	try {
-		rimraf.sync(testDataPath);
+		fs.rmSync(testDataPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
 	} catch {
 		// noop
 	}
 });
 
 const testRepoUrl = 'https://github.com/microsoft/vscode-smoketest-express';
-const workspacePath = path.join(testDataPath, 'vscode-smoketest-express');
+const workspacePath = path.join(testDataPath, `vscode-smoketest-express`);
 const extensionsPath = path.join(testDataPath, 'extensions-dir');
-mkdirp.sync(extensionsPath);
+fs.mkdirSync(extensionsPath, { recursive: true });
 
 function fail(errorMessage): void {
 	logger.log(errorMessage);
@@ -179,7 +190,7 @@ function parseQuality(): Quality {
 //
 if (!opts.web) {
 	let testCodePath = opts.build;
-	let electronPath: string;
+	let electronPath: string | undefined;
 
 	if (testCodePath) {
 		electronPath = getBuildElectronPath(testCodePath);
@@ -193,7 +204,7 @@ if (!opts.web) {
 	}
 
 	if (!fs.existsSync(electronPath || '')) {
-		fail(`Can't find VSCode at ${electronPath}. Please run VSCode once first (scripts/code.sh, scripts\\code.bat) and try again.`);
+		fail(`Cannot find VSCode at ${electronPath}. Please run VSCode once first (scripts/code.sh, scripts\\code.bat) and try again.`);
 	}
 
 	quality = parseQuality();
@@ -213,7 +224,7 @@ else {
 
 	if (typeof testCodeServerPath === 'string') {
 		if (!fs.existsSync(testCodeServerPath)) {
-			fail(`Can't find Code server at ${testCodeServerPath}.`);
+			fail(`Cannot find Code server at ${testCodeServerPath}.`);
 		} else {
 			logger.log(`Running web smoke tests against ${testCodeServerPath}`);
 		}
@@ -237,7 +248,7 @@ const userDataDir = path.join(testDataPath, 'd');
 async function setupRepository(): Promise<void> {
 	if (opts['test-repo']) {
 		logger.log('Copying test project repository:', opts['test-repo']);
-		rimraf.sync(workspacePath);
+		fs.rmSync(workspacePath, { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
 		// not platform friendly
 		if (process.platform === 'win32') {
 			cp.execSync(`xcopy /E "${opts['test-repo']}" "${workspacePath}"\\*`);
@@ -263,30 +274,31 @@ async function setupRepository(): Promise<void> {
 async function ensureStableCode(): Promise<void> {
 	let stableCodePath = opts['stable-build'];
 	if (!stableCodePath) {
-		const { major, minor } = parseVersion(version!);
-		const majorMinorVersion = `${major}.${minor - 1}`;
-		const versionsReq = await retry(() => measureAndLog(fetch('https://update.code.visualstudio.com/api/releases/stable', { headers: { 'x-api-version': '2' } }), 'versionReq', logger), 1000, 20);
+		const current = parseVersion(version!);
+		const versionsReq = await retry(() => measureAndLog(() => fetch('https://update.code.visualstudio.com/api/releases/stable'), 'versionReq', logger), 1000, 20);
 
 		if (!versionsReq.ok) {
 			throw new Error('Could not fetch releases from update server');
 		}
 
-		const versions: { version: string }[] = await measureAndLog(versionsReq.json(), 'versionReq.json()', logger);
-		const prefix = `${majorMinorVersion}.`;
-		const previousVersion = versions.find(v => v.version.startsWith(prefix));
+		const versions: string[] = await measureAndLog(() => versionsReq.json(), 'versionReq.json()', logger);
+		const stableVersion = versions.find(raw => {
+			const version = parseVersion(raw);
+			return version.major < current.major || (version.major === current.major && version.minor < current.minor);
+		});
 
-		if (!previousVersion) {
-			throw new Error(`Could not find suitable stable version ${majorMinorVersion}`);
+		if (!stableVersion) {
+			throw new Error(`Could not find suitable stable version for ${version}`);
 		}
 
-		logger.log(`Found VS Code v${version}, downloading previous VS Code version ${previousVersion.version}...`);
+		logger.log(`Found VS Code v${version}, downloading previous VS Code version ${stableVersion}...`);
 
 		let lastProgressMessage: string | undefined = undefined;
 		let lastProgressReportedAt = 0;
 		const stableCodeDestination = path.join(testDataPath, 's');
-		const stableCodeExecutable = await retry(() => measureAndLog(vscodetest.download({
+		const stableCodeExecutable = await retry(() => measureAndLog(() => vscodetest.download({
 			cachePath: stableCodeDestination,
-			version: previousVersion.version,
+			version: stableVersion,
 			extractSync: true,
 			reporter: {
 				report: report => {
@@ -305,27 +317,23 @@ async function ensureStableCode(): Promise<void> {
 				},
 				error: error => logger.log(`download stable code error: ${error}`)
 			}
-		}), 'download stable code', logger), 1000, 3, () => new Promise<void>((resolve, reject) => {
-			rimraf(stableCodeDestination, { maxBusyTries: 10 }, error => {
-				if (error) {
-					reject(error);
-				} else {
-					resolve();
-				}
-			});
-		}));
+		}), 'download stable code', logger), 1000, 3, async () => {
+			fs.rmSync(stableCodeDestination, { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
+		});
 
 		if (process.platform === 'darwin') {
-			// Visual Studio Code.app/Contents/MacOS/Electron
+			// Visual Studio Code.app/Contents/MacOS/Code
 			stableCodePath = path.dirname(path.dirname(path.dirname(stableCodeExecutable)));
 		} else {
 			// VSCode/Code.exe (Windows) | VSCode/code (Linux)
 			stableCodePath = path.dirname(stableCodeExecutable);
 		}
+
+		opts['stable-version'] = parseVersion(stableVersion);
 	}
 
 	if (!fs.existsSync(stableCodePath)) {
-		throw new Error(`Can't find Stable VSCode at ${stableCodePath}.`);
+		throw new Error(`Cannot find Stable VSCode at ${stableCodePath}.`);
 	}
 
 	logger.log(`Using stable build ${stableCodePath} for migration tests`);
@@ -339,9 +347,19 @@ async function setup(): Promise<void> {
 
 	if (!opts.web && !opts.remote && opts.build) {
 		// only enabled when running with --build and not in web or remote
-		await measureAndLog(ensureStableCode(), 'ensureStableCode', logger);
+		await measureAndLog(() => ensureStableCode(), 'ensureStableCode', logger);
 	}
-	await measureAndLog(setupRepository(), 'setupRepository', logger);
+	await measureAndLog(() => setupRepository(), 'setupRepository', logger);
+
+	// Copy smoke test extension for extension host restart test
+	if (!opts.web && !opts.remote) {
+		const smokeExtPath = path.join(rootPath, 'test', 'smoke', 'extensions', 'vscode-smoketest-ext-host');
+		const dest = path.join(extensionsPath, 'vscode-smoketest-ext-host');
+		if (fs.existsSync(dest)) {
+			fs.rmSync(dest, { recursive: true, force: true });
+		}
+		fs.cpSync(smokeExtPath, dest, { recursive: true });
+	}
 
 	logger.log('Smoketest setup done!\n');
 }
@@ -350,11 +368,13 @@ async function setup(): Promise<void> {
 before(async function () {
 	this.timeout(5 * 60 * 1000); // increase since we download VSCode
 
-	this.defaultOptions = {
+	const options: ApplicationOptions = {
 		quality,
+		version: parseVersion(version ?? '0.0.0'),
 		codePath: opts.build,
 		workspacePath,
 		userDataDir,
+		useInMemorySecretStorage: true,
 		extensionsPath,
 		logger,
 		logsPath: path.join(logsRootPath, 'suite_unknown'),
@@ -362,11 +382,12 @@ before(async function () {
 		verbose: opts.verbose,
 		remote: opts.remote,
 		web: opts.web,
-		tracing: opts.tracing,
+		tracing: opts.tracing || !!process.env.BUILD_ARTIFACTSTAGINGDIRECTORY || !!process.env.GITHUB_WORKSPACE,
 		headless: opts.headless,
 		browser: opts.browser,
 		extraArgs: (opts.electronArgs || '').split(' ').map(arg => arg.trim()).filter(arg => !!arg)
 	};
+	this.defaultOptions = options;
 
 	await setup();
 });
@@ -374,38 +395,28 @@ before(async function () {
 // After main suite (after all tests)
 after(async function () {
 	try {
-		let deleted = false;
-		await measureAndLog(Promise.race([
-			new Promise<void>((resolve, reject) => rimraf(testDataPath, { maxBusyTries: 10 }, error => {
-				if (error) {
-					reject(error);
-				} else {
-					deleted = true;
-					resolve();
-				}
-			})),
-			timeout(30000).then(() => {
-				if (!deleted) {
-					throw new Error('giving up after 30s');
-				}
-			})
-		]), 'rimraf(testDataPath)', logger);
+		await measureAndLog(async () => {
+			fs.rmSync(testDataPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
+		}, 'rimraf(testDataPath)', logger);
 	} catch (error) {
 		logger.log(`Unable to delete smoke test workspace: ${error}. This indicates some process is locking the workspace folder.`);
 	}
 });
 
 describe(`VSCode Smoke Tests (${opts.web ? 'Web' : 'Electron'})`, () => {
-	if (!opts.web) { setupDataLossTests(() => opts['stable-build'] /* Do not change, deferred for a reason! */, logger); }
+	if (!opts.web) { setupDataLossTests(() => { return { stableCodePath: opts['stable-build'], stableCodeVersion: opts['stable-version'] } /* Do not change, deferred for a reason! */; }, logger); }
 	setupPreferencesTests(logger);
 	setupSearchTests(logger);
-	setupNotebookTests(logger);
+	if (!opts.web) { setupNotebookTests(logger); }
 	setupLanguagesTests(logger);
-	if (opts.web) { setupTerminalTests(logger); } // Not stable on desktop/remote https://github.com/microsoft/vscode/issues/146811
+	setupTerminalTests(logger);
 	setupTaskTests(logger);
 	setupStatusbarTests(logger);
 	if (quality !== Quality.Dev && quality !== Quality.OSS) { setupExtensionTests(logger); }
-	setupMultirootTests(logger);
+	if (!opts.web && !opts.remote) { setupExtensionHostRestartTests(logger); }
+	if (!(opts.web && process.platform === 'win32' /* TODO@bpasero flaky */)) { setupMultirootTests(logger); }
 	if (!opts.web && !opts.remote && quality !== Quality.Dev && quality !== Quality.OSS) { setupLocalizationTests(logger); }
 	if (!opts.web && !opts.remote) { setupLaunchTests(logger); }
+	if (!opts.web) { setupChatTests(logger); }
+	setupAccessibilityTests(logger, opts, quality);
 });

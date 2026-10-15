@@ -1,9 +1,9 @@
 test/**
 src/**
-tsconfig.json
+tsconfig*.json
 out/**
-extension.webpack.config.js
-extension-browser.webpack.config.js
-yarn.lock
+esbuild*
+package-lock.json
 build/**
-schemas/*.schema.src.json
+schemas/devContainer.codespaces.schema.json
+schemas/devContainer.vscode.schema.json

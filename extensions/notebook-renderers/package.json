@@ -3,8 +3,9 @@
 	"displayName": "%displayName%",
 	"description": "%description%",
 	"publisher": "vscode",
-	"version": "1.0.0",
+	"version": "10.0.0",
 	"license": "MIT",
+	"icon": "media/icon.png",
 	"engines": {
 		"vscode": "^1.57.0"
 	},
@@ -41,14 +42,15 @@
 		]
 	},
 	"scripts": {
-		"compile": "npm run build-notebook",
-		"watch": "node ./esbuild --watch",
-		"build-notebook": "node ./esbuild"
-	},
-	"dependencies": {
+		"compile": "npx gulp compile-extension:notebook-renderers && npm run build-notebook",
+		"watch": "npx gulp compile-watch:notebook-renderers",
+		"build-notebook": "node ./esbuild.notebook.mts"
 	},
 	"devDependencies": {
-		"@types/vscode-notebook-renderer": "^1.60.0"
+		"@types/jsdom": "^21.1.0",
+		"@types/node": "^22.18.10",
+		"@types/vscode-notebook-renderer": "^1.60.0",
+		"jsdom": "^28.1.0"
 	},
 	"repository": {
 		"type": "git",

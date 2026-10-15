@@ -4,20 +4,19 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import type * as Proto from '../protocol';
+import { DocumentSelector } from '../configuration/documentSelector';
+import { LanguageDescription } from '../configuration/languageDescription';
+import type * as Proto from '../tsServer/protocol/protocol';
+import * as typeConverters from '../typeConverters';
 import { ITypeScriptServiceClient } from '../typescriptService';
-import API from '../utils/api';
-import { Condition, conditionalRegistration, requireMinVersion } from '../utils/dependentRegistration';
 import { Disposable } from '../utils/dispose';
-import { DocumentSelector } from '../utils/documentSelector';
-import { LanguageDescription } from '../utils/languageDescription';
-import * as typeConverters from '../utils/typeConverters';
+import { readUnifiedConfig } from '../utils/configuration';
+import { Condition, conditionalRegistration } from './util/dependentRegistration';
 
 class TagClosing extends Disposable {
-	public static readonly minVersion = API.v300;
 
 	private _disposed = false;
-	private _timeout: NodeJS.Timer | undefined = undefined;
+	private _timeout: NodeJS.Timeout | undefined = undefined;
 	private _cancel: vscode.CancellationTokenSource | undefined = undefined;
 
 	constructor(
@@ -58,7 +57,7 @@ class TagClosing extends Disposable {
 			return;
 		}
 
-		const filepath = this.client.toOpenedFilePath(document);
+		const filepath = this.client.toOpenTsFilePath(document);
 		if (!filepath) {
 			return;
 		}
@@ -151,7 +150,7 @@ function requireActiveDocumentSetting(
 				return false;
 			}
 
-			return !!vscode.workspace.getConfiguration(language.id, editor.document).get('autoClosingTags');
+			return !!readUnifiedConfig<boolean>('autoClosingTags.enabled', true, { scope: editor.document, fallbackSection: language.id, fallbackSubSectionNameOverride: 'autoClosingTags' });
 		},
 		handler => {
 			return vscode.Disposable.from(
@@ -167,7 +166,6 @@ export function register(
 	client: ITypeScriptServiceClient,
 ) {
 	return conditionalRegistration([
-		requireMinVersion(client, TagClosing.minVersion),
 		requireActiveDocumentSetting(selector.syntax, language)
 	], () => new TagClosing(client));
 }

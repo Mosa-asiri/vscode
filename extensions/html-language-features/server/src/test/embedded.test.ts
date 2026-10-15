@@ -2,11 +2,11 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-import 'mocha';
-import * as assert from 'assert';
-import * as embeddedSupport from '../modes/embeddedSupport';
+import { suite, test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as embeddedSupport from '../modes/embeddedSupport.js';
 import { getLanguageService } from 'vscode-html-languageservice';
-import { TextDocument } from '../modes/languageModes';
+import { TextDocument } from '../modes/languageModes.js';
 
 suite('HTML Embedded Support', () => {
 
@@ -119,10 +119,21 @@ suite('HTML Embedded Support', () => {
 	test('Script content', function (): any {
 		assertEmbeddedLanguageContent('<html><script>var i = 0;</script></html>', 'javascript', '              var i = 0;                ');
 		assertEmbeddedLanguageContent('<script type="text/javascript">var i = 0;</script>', 'javascript', '                               var i = 0;         ');
+		assertEmbeddedLanguageContent('<script><!--this comment should not give error--></script>', 'javascript', '        /* this comment should not give error */         ');
+		assertEmbeddedLanguageContent('<script><!--this comment should not give error--> console.log("logging");</script>', 'javascript', '        /* this comment should not give error */ console.log("logging");         ');
 
+		assertEmbeddedLanguageContent('<script>var data=100; <!--this comment should not give error--> </script>', 'javascript', '        var data=100; /* this comment should not give error */          ');
 		assertEmbeddedLanguageContent('<div onKeyUp="foo()" onkeydown="bar()"/>', 'javascript', '              foo();            bar();  ');
 		assertEmbeddedLanguageContent('<div onKeyUp="return"/>', 'javascript', '              return;  ');
+		assertEmbeddedLanguageContent('<div onKeyUp=return\n/><script>foo();</script>', 'javascript', '             return;\n          foo();         ');
+	});
 
+	test('Script content - HTML escape characters', function (): any {
+		assertEmbeddedLanguageContent('<div style="font-family: &quot;Arial&quot;"></div>', 'css', '         __{font-family: "     Arial     "}       ');
+		assertEmbeddedLanguageContent('<div style="font-family: &#34;Arial&#34;"></div>', 'css', '         __{font-family: "    Arial    "}       ');
+		assertEmbeddedLanguageContent('<div style="font-family: &quot;Arial&#34;"></div>', 'css', '         __{font-family: "     Arial    "}       ');
+		assertEmbeddedLanguageContent('<div style="font-family:&quot; Arial &quot; "></div>', 'css', '         __{font-family:     " Arial      " }       ');
+		assertEmbeddedLanguageContent('<div style="font-family: Arial"></div>', 'css', '         __{font-family: Arial}       ');
 	});
 
 });

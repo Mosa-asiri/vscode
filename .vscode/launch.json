@@ -20,19 +20,20 @@
 			"port": 5870,
 			"outFiles": [
 				"${workspaceFolder}/out/**/*.js",
-				"${workspaceFolder}/extensions/*/out/**/*.js"
+				"${workspaceFolder}/extensions/*/out/**/*.js",
+				"${workspaceFolder}/extensions/copilot/dist/**/*.js"
 			]
 		},
 		{
-			"type": "pwa-chrome",
+			"type": "node",
 			"request": "attach",
+			"restart": true,
 			"name": "Attach to Shared Process",
-			"timeout": 30000,
-			"port": 9222,
-			"urlFilter": "*sharedProcess.html*",
-			"presentation": {
-				"hidden": true
-			}
+			"timeout": 0,
+			"port": 5879,
+			"outFiles": [
+				"${workspaceFolder}/out/**/*.js"
+			]
 		},
 		{
 			"type": "node",
@@ -55,6 +56,17 @@
 		{
 			"type": "node",
 			"request": "attach",
+			"name": "Attach to Agent Host Process",
+			"port": 5878,
+			"restart": true,
+			"timeout": 0,
+			"outFiles": [
+				"${workspaceFolder}/out/**/*.js"
+			]
+		},
+		{
+			"type": "node",
+			"request": "attach",
 			"name": "Attach to CLI Process",
 			"port": 5874,
 			"outFiles": [
@@ -67,6 +79,7 @@
 			"name": "Attach to Main Process",
 			"timeout": 30000,
 			"port": 5875,
+			"continueOnAttach": true,
 			"outFiles": [
 				"${workspaceFolder}/out/**/*.js"
 			],
@@ -158,7 +171,7 @@
 				"--disable-extensions"
 			],
 			"outFiles": [
-				"${workspaceFolder}/out/**/*.js"
+				"${workspaceFolder}/extensions/vscode-api-tests/out/**/*.js"
 			],
 			"presentation": {
 				"group": "5_tests",
@@ -176,7 +189,7 @@
 				"--extensionTestsPath=${workspaceFolder}/extensions/vscode-api-tests/out/workspace-tests"
 			],
 			"outFiles": [
-				"${workspaceFolder}/out/**/*.js"
+				"${workspaceFolder}/extensions/vscode-api-tests/out/**/*.js"
 			],
 			"presentation": {
 				"group": "5_tests",
@@ -202,7 +215,25 @@
 			}
 		},
 		{
-			"type": "pwa-chrome",
+			"type": "extensionHost",
+			"request": "launch",
+			"name": "VS Code Tokenizer Performance Tests",
+			"runtimeExecutable": "${execPath}",
+			"args": [
+				"${workspaceFolder}/extensions/vscode-colorize-perf-tests/test",
+				"--extensionDevelopmentPath=${workspaceFolder}/extensions/vscode-colorize-perf-tests",
+				"--extensionTestsPath=${workspaceFolder}/extensions/vscode-colorize-perf-tests/out"
+			],
+			"outFiles": [
+				"${workspaceFolder}/out/**/*.js"
+			],
+			"presentation": {
+				"group": "5_tests",
+				"order": 6
+			}
+		},
+		{
+			"type": "chrome",
 			"request": "attach",
 			"name": "Attach to VS Code",
 			"browserAttachLocation": "workspace",
@@ -216,7 +247,7 @@
 			"perScriptSourcemaps": "yes"
 		},
 		{
-			"type": "pwa-chrome",
+			"type": "chrome",
 			"request": "launch",
 			"name": "Launch VS Code Internal",
 			"windows": {
@@ -229,25 +260,27 @@
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
 			},
 			"port": 9222,
-			"timeout": 20000,
+			"timeout": 0,
 			"env": {
 				"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
-				"VSCODE_SKIP_PRELAUNCH": "1"
+				"VSCODE_SKIP_PRELAUNCH": "1",
+				"VSCODE_DEV_DEBUG_OBSERVABLES": "1",
 			},
 			"cleanUp": "wholeBrowser",
-			"urlFilter": "*workbench.html*",
+			"killBehavior": "polite",
 			"runtimeArgs": [
-				"--inspect=5875",
+				"--inspect-brk=5875",
 				"--no-cached-data",
 				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
 				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
 				"--disable-features=CalculateNativeWinOcclusion",
+				"--disable-extension=vscode.vscode-api-tests"
 			],
+			"userDataDir": "${userHome}/.vscode-oss-dev",
 			"webRoot": "${workspaceFolder}",
 			"cascadeTerminateToConfigurations": [
 				"Attach to Extension Host"
 			],
-			"userDataDir": "${workspaceFolder}/.profile-oss",
 			"pauseForSourceMap": false,
 			"outFiles": [
 				"${workspaceFolder}/out/**/*.js"
@@ -255,10 +288,104 @@
 			"browserLaunchLocation": "workspace",
 			"presentation": {
 				"hidden": true,
-			}
+			},
 		},
 		{
-			"type": "pwa-node",
+			"type": "chrome",
+			"request": "launch",
+			"name": "Launch VS Code Agents Internal",
+			"windows": {
+				"runtimeExecutable": "${workspaceFolder}/scripts/code.bat"
+			},
+			"osx": {
+				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
+			},
+			"linux": {
+				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
+			},
+			"port": 9222,
+			"timeout": 0,
+			"env": {
+				"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
+				"VSCODE_SKIP_PRELAUNCH": "1",
+				"VSCODE_DEV_DEBUG_OBSERVABLES": "1",
+			},
+			"cleanUp": "wholeBrowser",
+			"killBehavior": "polite",
+			"runtimeArgs": [
+				"--inspect-brk=5875",
+				"--no-cached-data",
+				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
+				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
+				"--disable-features=CalculateNativeWinOcclusion",
+				"--disable-extension=vscode.vscode-api-tests",
+				"--agents"
+			],
+			"userDataDir": "${userHome}/.vscode-oss-agents-dev",
+			"webRoot": "${workspaceFolder}",
+			"cascadeTerminateToConfigurations": [
+				"Attach to Extension Host"
+			],
+			"pauseForSourceMap": false,
+			"outFiles": [
+				"${workspaceFolder}/out/**/*.js"
+			],
+			"browserLaunchLocation": "workspace",
+			"presentation": {
+				"hidden": true,
+			},
+		},
+		{
+			// To debug observables you also need the extension "ms-vscode.debug-value-editor"
+			"type": "chrome",
+			"request": "launch",
+			"name": "Launch VS Code Internal (Hot Reload)",
+			"windows": {
+				"runtimeExecutable": "${workspaceFolder}/scripts/code.bat"
+			},
+			"osx": {
+				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
+			},
+			"linux": {
+				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
+			},
+			"port": 9222,
+			"timeout": 0,
+			"env": {
+				"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
+				"VSCODE_SKIP_PRELAUNCH": "1",
+				"VSCODE_DEV_DEBUG": "1",
+				"VSCODE_DEV_SERVER_URL": "http://localhost:5199/build/vite/workbench-vite-electron.html",
+				"DEV_WINDOW_SRC": "http://localhost:5199/build/vite/workbench-vite-electron.html",
+				"VSCODE_DEV_DEBUG_OBSERVABLES": "1",
+				"VSCODE_DEV": "1"
+			},
+			"cleanUp": "wholeBrowser",
+			"runtimeArgs": [
+				"--inspect-brk=5875",
+				"--no-cached-data",
+				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
+				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
+				"--disable-features=CalculateNativeWinOcclusion",
+				"--disable-extension=vscode.vscode-api-tests"
+			],
+			"userDataDir": "${userHome}/.vscode-oss-dev",
+			"webRoot": "${workspaceFolder}",
+			"cascadeTerminateToConfigurations": [
+				"Attach to Extension Host"
+			],
+			"pauseForSourceMap": false,
+			"outFiles": [
+				"${workspaceFolder}/out/**/*.js"
+			],
+			"browserLaunchLocation": "workspace",
+			"presentation": {
+				"hidden": true,
+			},
+			"preLaunchTask": "Launch Monaco Editor Vite"
+		},
+		{
+			"type": "node",
 			"request": "launch",
 			"name": "VS Code Server (Web)",
 			"runtimeExecutable": "${workspaceFolder}/scripts/code-server.sh",
@@ -274,10 +401,26 @@
 			}
 		},
 		{
-			"type": "pwa-node",
+			"type": "node",
+			"request": "launch",
+			"name": "VS Code Agent Host",
+			"outputCapture": "std",
+			"program": "./scripts/code-agent-host.js",
+			"args": ["--port", "7777", "--without-connection-token"],
+			"outFiles": [
+				"${workspaceFolder}/out/**/*.js"
+			],
+			"presentation": {
+				"group": "0_vscode",
+				"order": 2
+			}
+		},
+		{
+			"type": "node",
 			"request": "launch",
 			"name": "Main Process",
 			"attachSimplePort": 5875,
+			"enableContentValidation": false,
 			"runtimeExecutable": "${workspaceFolder}/scripts/code.sh",
 			"windows": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.bat",
@@ -295,7 +438,7 @@
 			}
 		},
 		{
-			"type": "pwa-chrome",
+			"type": "chrome",
 			"request": "launch",
 			"outFiles": [],
 			"perScriptSourcemaps": "yes",
@@ -308,7 +451,7 @@
 			}
 		},
 		{
-			"type": "pwa-msedge",
+			"type": "msedge",
 			"request": "launch",
 			"outFiles": [],
 			"perScriptSourcemaps": "yes",
@@ -316,6 +459,33 @@
 			"url": "http://localhost:8080?tkn=dev-token",
 			"pauseForSourceMap": false,
 			"preLaunchTask": "Run code server",
+			"presentation": {
+				"group": "0_vscode",
+				"order": 3
+			}
+		},
+		{
+			"type": "chrome",
+			"request": "launch",
+			"outFiles": [],
+			"perScriptSourcemaps": "yes",
+			"name": "VS Code Web (Chrome)",
+			"url": "http://localhost:8080",
+			"preLaunchTask": "Run code web",
+			"presentation": {
+				"group": "0_vscode",
+				"order": 3
+			}
+		},
+		{
+			"type": "msedge",
+			"request": "launch",
+			"outFiles": [],
+			"perScriptSourcemaps": "yes",
+			"name": "VS Code Web (Edge)",
+			"url": "http://localhost:8080",
+			"pauseForSourceMap": false,
+			"preLaunchTask": "Run code web",
 			"presentation": {
 				"group": "0_vscode",
 				"order": 3
@@ -403,11 +573,11 @@
 			}
 		},
 		{
-			"type": "pwa-node",
+			"type": "node",
 			"request": "launch",
 			"name": "Run Unit Tests",
 			"program": "${workspaceFolder}/test/unit/electron/index.js",
-			"runtimeExecutable": "${workspaceFolder}/.build/electron/Code - OSS.app/Contents/MacOS/Electron",
+			"runtimeExecutable": "${workspaceFolder}/.build/electron/Code - OSS.app/Contents/MacOS/Code - OSS",
 			"windows": {
 				"runtimeExecutable": "${workspaceFolder}/.build/electron/Code - OSS.exe"
 			},
@@ -433,11 +603,11 @@
 			}
 		},
 		{
-			"type": "pwa-node",
+			"type": "node",
 			"request": "launch",
 			"name": "Run Unit Tests For Current File",
 			"program": "${workspaceFolder}/test/unit/electron/index.js",
-			"runtimeExecutable": "${workspaceFolder}/.build/electron/Code - OSS.app/Contents/MacOS/Electron",
+			"runtimeExecutable": "${workspaceFolder}/.build/electron/Code - OSS.app/Contents/MacOS/Code - OSS",
 			"windows": {
 				"runtimeExecutable": "${workspaceFolder}/.build/electron/Code - OSS.exe"
 			},
@@ -468,13 +638,12 @@
 			"type": "node",
 			"request": "launch",
 			"name": "Launch Smoke Test",
-			"program": "${workspaceFolder}/test/smoke/out/main.js",
+			"program": "${workspaceFolder}/test/smoke/test/index.js",
 			"cwd": "${workspaceFolder}/test/smoke",
 			"timeout": 240000,
-			"port": 9999,
 			"args": [
 				"-l",
-				"${workspaceFolder}/.build/electron/Code - OSS.app/Contents/MacOS/Electron"
+				"${workspaceFolder}/.build/electron/Code - OSS.app/Contents/MacOS/Code - OSS"
 			],
 			"outFiles": [
 				"${cwd}/out/**/*.js"
@@ -493,6 +662,61 @@
 			"args": [
 				"--extensionDevelopmentPath=${workspaceRoot}/extensions/debug-auto-launch"
 			]
+		},
+		{
+			"name": "Monaco Editor - Playground",
+			"type": "chrome",
+			"request": "launch",
+			"url": "https://microsoft.github.io/monaco-editor/playground.html?source=http%3A%2F%2Flocalhost%3A5199%2Fbuild%2Fvite%2Findex.ts%3Fesm#example-creating-the-editor-hello-world",
+			"preLaunchTask": "Launch Monaco Editor Vite",
+			"presentation": {
+				"group": "monaco",
+				"order": 4
+			}
+		},
+		{
+			"name": "Component Explorer (Edge)",
+			"type": "msedge",
+			"request": "launch",
+			"url": "http://localhost:5337/___explorer",
+			"preLaunchTask": "Component Explorer Server",
+			"presentation": {
+				"group": "1_component_explorer",
+				"order": 4
+			}
+		},
+		{
+			"name": "Component Explorer (Chrome)",
+			"type": "chrome",
+			"request": "launch",
+			"url": "http://localhost:5337/___explorer",
+			"preLaunchTask": "Component Explorer Server",
+			"presentation": {
+				"group": "1_component_explorer",
+				"order": 4
+			}
+		},
+		{
+			"name": "Monaco Editor - Self Contained Diff Editor",
+			"type": "chrome",
+			"request": "launch",
+			"url": "http://localhost:5199/build/vite/index.html",
+			"preLaunchTask": "Launch Monaco Editor Vite",
+			"presentation": {
+				"group": "monaco",
+				"order": 4
+			}
+		},
+		{
+			"name": "Monaco Editor - Workbench",
+			"type": "chrome",
+			"request": "launch",
+			"url": "http://localhost:5199/build/vite/workbench-vite.html",
+			"preLaunchTask": "Launch Monaco Editor Vite",
+			"presentation": {
+				"group": "monaco",
+				"order": 4
+			}
 		}
 	],
 	"compounds": [
@@ -504,6 +728,7 @@
 				"Attach to Main Process",
 				"Attach to Extension Host",
 				"Attach to Shared Process",
+				"Attach to Agent Host Process"
 			],
 			"preLaunchTask": "Ensure Prelaunch Dependencies",
 			"presentation": {
@@ -512,9 +737,40 @@
 			}
 		},
 		{
-			"name": "Search and Renderer processes",
+			"name": "VS Code Agents",
+			"stopAll": true,
+			"configurations": [
+				"Launch VS Code Agents Internal",
+				"Attach to Main Process",
+				"Attach to Extension Host",
+				"Attach to Shared Process",
+			],
+			"preLaunchTask": "Ensure Prelaunch Dependencies",
+			"presentation": {
+				"group": "0_vscode",
+				"order": 1
+			}
+		},
+		{
+			"name": "VS Code (Hot Reload)",
+			"stopAll": true,
+			"configurations": [
+				"Launch VS Code Internal (Hot Reload)",
+				"Attach to Main Process",
+				"Attach to Extension Host",
+				"Attach to Shared Process",
+			],
+			"preLaunchTask": "Ensure Prelaunch Dependencies",
+			"presentation": {
+				"group": "0_vscode",
+				"order": 1
+			}
+		},
+		{
+			"name": "Search, Renderer, and Main processes",
 			"configurations": [
 				"Launch VS Code Internal",
+				"Attach to Main Process",
 				"Attach to Search Process"
 			],
 			"presentation": {
@@ -523,9 +779,10 @@
 			}
 		},
 		{
-			"name": "Renderer and Extension Host processes",
+			"name": "Renderer, Extension Host, and Main processes",
 			"configurations": [
 				"Launch VS Code Internal",
+				"Attach to Main Process",
 				"Attach to Extension Host"
 			],
 			"presentation": {
@@ -556,10 +813,21 @@
 			}
 		},
 		{
-			"name": "Launch VS Code",
+			"name": "Renderer and Main processes",
 			"stopAll": true,
 			"configurations": [
 				"Launch VS Code Internal",
+				"Attach to Main Process"
+			],
+			"preLaunchTask": "Ensure Prelaunch Dependencies"
+		},
+		{
+			"name": "Renderer and Agent Host processes",
+			"stopAll": true,
+			"configurations": [
+				"Launch VS Code Internal",
+				"Attach to Main Process",
+				"Attach to Agent Host Process"
 			],
 			"preLaunchTask": "Ensure Prelaunch Dependencies"
 		},

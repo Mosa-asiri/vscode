@@ -3,25 +3,25 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import * as rimraf from 'rimraf';
-import * as es from 'event-stream';
-import * as rename from 'gulp-rename';
-import * as vfs from 'vinyl-fs';
-import * as ext from './extensions';
-import * as fancyLog from 'fancy-log';
-import * as ansiColors from 'ansi-colors';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import rimraf from 'rimraf';
+import es from 'event-stream';
+import rename from 'gulp-rename';
+import vfs from 'vinyl-fs';
+import * as ext from './extensions.ts';
+import fancyLog from 'fancy-log';
+import ansiColors from 'ansi-colors';
 import { Stream } from 'stream';
-
-const mkdirp = require('mkdirp');
 
 export interface IExtensionDefinition {
 	name: string;
 	version: string;
+	sha256: string;
 	repo: string;
 	platforms?: string[];
+	vsix?: string;
 	metadata: {
 		id: string;
 		publisherId: {
@@ -34,10 +34,10 @@ export interface IExtensionDefinition {
 	};
 }
 
-const root = path.dirname(path.dirname(__dirname));
-const productjson = JSON.parse(fs.readFileSync(path.join(__dirname, '../../product.json'), 'utf8'));
-const builtInExtensions = <IExtensionDefinition[]>productjson.builtInExtensions || [];
-const webBuiltInExtensions = <IExtensionDefinition[]>productjson.webBuiltInExtensions || [];
+const root = path.dirname(path.dirname(import.meta.dirname));
+const productjson = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '../../product.json'), 'utf8'));
+const builtInExtensions = productjson.builtInExtensions as IExtensionDefinition[] || [];
+const webBuiltInExtensions = productjson.webBuiltInExtensions as IExtensionDefinition[] || [];
 const controlFilePath = path.join(os.homedir(), '.vscode-oss-dev', 'extensions', 'control.json');
 const ENABLE_LOGGING = !process.env['VSCODE_BUILD_BUILTIN_EXTENSIONS_SILENCE_PLEASE'];
 
@@ -68,10 +68,34 @@ function isUpToDate(extension: IExtensionDefinition): boolean {
 	}
 }
 
+function getExtensionDownloadStream(extension: IExtensionDefinition) {
+	let input: Stream;
+
+	if (extension.vsix) {
+		input = ext.fromVsix(path.join(root, extension.vsix), extension);
+	} else if (productjson.extensionsGallery?.serviceUrl) {
+		input = ext.fromMarketplace(productjson.extensionsGallery.serviceUrl, extension);
+	} else {
+		input = ext.fromGithub(extension);
+	}
+
+	return input.pipe(rename(p => p.dirname = `${extension.name}/${p.dirname}`));
+}
+
+export function getExtensionStream(extension: IExtensionDefinition) {
+	// if the extension exists on disk, use those files instead of downloading anew
+	if (isUpToDate(extension)) {
+		log('[extensions]', `${extension.name}@${extension.version} up to date`, ansiColors.green('✔︎'));
+		return vfs.src(['**'], { cwd: getExtensionPath(extension), dot: true })
+			.pipe(rename(p => p.dirname = `${extension.name}/${p.dirname}`));
+	}
+
+	return getExtensionDownloadStream(extension);
+}
+
 function syncMarketplaceExtension(extension: IExtensionDefinition): Stream {
 	const galleryServiceUrl = productjson.extensionsGallery?.serviceUrl;
 	const source = ansiColors.blue(galleryServiceUrl ? '[marketplace]' : '[github]');
-
 	if (isUpToDate(extension)) {
 		log(source, `${extension.name}@${extension.version}`, ansiColors.green('✔︎'));
 		return es.readArray([]);
@@ -79,8 +103,7 @@ function syncMarketplaceExtension(extension: IExtensionDefinition): Stream {
 
 	rimraf.sync(getExtensionPath(extension));
 
-	return (galleryServiceUrl ? ext.fromMarketplace(galleryServiceUrl, extension) : ext.fromGithub(extension))
-		.pipe(rename(p => p.dirname = `${extension.name}/${p.dirname}`))
+	return getExtensionDownloadStream(extension)
 		.pipe(vfs.dest('.build/builtInExtensions'))
 		.on('end', () => log(source, extension.name, ansiColors.green('✔︎')));
 }
@@ -131,7 +154,7 @@ function readControlFile(): IControlFile {
 }
 
 function writeControlFile(control: IControlFile): void {
-	mkdirp.sync(path.dirname(controlFilePath));
+	fs.mkdirSync(path.dirname(controlFilePath), { recursive: true });
 	fs.writeFileSync(controlFilePath, JSON.stringify(control, null, 2));
 }
 
@@ -158,7 +181,7 @@ export function getBuiltInExtensions(): Promise<void> {
 	});
 }
 
-if (require.main === module) {
+if (import.meta.main) {
 	getBuiltInExtensions().then(() => process.exit(0)).catch(err => {
 		console.error(err);
 		process.exit(1);

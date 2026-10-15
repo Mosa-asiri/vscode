@@ -3,21 +3,26 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as nls from 'vs/nls';
+import * as nls from '../../nls.js';
 
-import { NativeEnvironmentService } from 'vs/platform/environment/node/environmentService';
-import { OPTIONS, OptionDescriptions } from 'vs/platform/environment/node/argv';
-import { refineServiceDecorator } from 'vs/platform/instantiation/common/instantiation';
-import { IEnvironmentService, INativeEnvironmentService } from 'vs/platform/environment/common/environment';
+import { NativeEnvironmentService } from '../../platform/environment/node/environmentService.js';
+import { OPTIONS, OptionDescriptions } from '../../platform/environment/node/argv.js';
+import { refineServiceDecorator } from '../../platform/instantiation/common/instantiation.js';
+import { IEnvironmentService, INativeEnvironmentService } from '../../platform/environment/common/environment.js';
+import { memoize } from '../../base/common/decorators.js';
+import { URI } from '../../base/common/uri.js';
+import { joinPath } from '../../base/common/resources.js';
+import { join } from '../../base/common/path.js';
+import { ProtocolConstants } from '../../base/parts/ipc/common/ipc.net.js';
 
-export const serverOptions: OptionDescriptions<ServerParsedArgs> = {
+export const serverOptions: OptionDescriptions<Required<ServerParsedArgs>> = {
 
 	/* ----- server setup ----- */
 
 	'host': { type: 'string', cat: 'o', args: 'ip-address', description: nls.localize('host', "The host name or IP address the server should listen to. If not set, defaults to 'localhost'.") },
 	'port': { type: 'string', cat: 'o', args: 'port | port range', description: nls.localize('port', "The port the server should listen to. If 0 is passed a random free port is picked. If a range in the format num-num is passed, a free port from the range (end inclusive) is selected.") },
-	'pick-port': { type: 'string', deprecationMessage: 'Use the range notation in \'port\' instead.' },
 	'socket-path': { type: 'string', cat: 'o', args: 'path', description: nls.localize('socket-path', "The path to a socket file for the server to listen to.") },
+	'server-base-path': { type: 'string', cat: 'o', args: 'path', description: nls.localize('server-base-path', "The path under which the web UI and the code server is provided. Defaults to '/'.`") },
 	'connection-token': { type: 'string', cat: 'o', args: 'token', deprecates: ['connectionToken'], description: nls.localize('connection-token', "A secret that must be included with all requests.") },
 	'connection-token-file': { type: 'string', cat: 'o', args: 'path', deprecates: ['connection-secret', 'connectionTokenFile'], description: nls.localize('connection-token-file', "Path to a file that contains the connection token.") },
 	'without-connection-token': { type: 'boolean', cat: 'o', description: nls.localize('without-connection-token', "Run without a connection token. Only use this if the connection is secured by other means.") },
@@ -33,11 +38,13 @@ export const serverOptions: OptionDescriptions<ServerParsedArgs> = {
 	'user-data-dir': OPTIONS['user-data-dir'],
 	'enable-smoke-test-driver': OPTIONS['enable-smoke-test-driver'],
 	'disable-telemetry': OPTIONS['disable-telemetry'],
+	'disable-experiments': OPTIONS['disable-experiments'],
 	'disable-workspace-trust': OPTIONS['disable-workspace-trust'],
 	'file-watcher-polling': { type: 'string', deprecates: ['fileWatcherPolling'] },
 	'log': OPTIONS['log'],
 	'logsPath': OPTIONS['logsPath'],
 	'force-disable-user-env': OPTIONS['force-disable-user-env'],
+	'enable-proposed-api': OPTIONS['enable-proposed-api'],
 
 	/* ----- vs code web options ----- */
 
@@ -49,6 +56,7 @@ export const serverOptions: OptionDescriptions<ServerParsedArgs> = {
 
 	'enable-sync': { type: 'boolean' },
 	'github-auth': { type: 'string' },
+	'use-test-resolver': { type: 'boolean' },
 
 	/* ----- extension management ----- */
 
@@ -57,6 +65,7 @@ export const serverOptions: OptionDescriptions<ServerParsedArgs> = {
 	'builtin-extensions-dir': OPTIONS['builtin-extensions-dir'],
 	'install-extension': OPTIONS['install-extension'],
 	'install-builtin-extension': OPTIONS['install-builtin-extension'],
+	'update-extensions': OPTIONS['update-extensions'],
 	'uninstall-extension': OPTIONS['uninstall-extension'],
 	'list-extensions': OPTIONS['list-extensions'],
 	'locate-extension': OPTIONS['locate-extension'],
@@ -65,6 +74,7 @@ export const serverOptions: OptionDescriptions<ServerParsedArgs> = {
 	'category': OPTIONS['category'],
 	'force': OPTIONS['force'],
 	'do-not-sync': OPTIONS['do-not-sync'],
+	'do-not-include-pack-dependencies': OPTIONS['do-not-include-pack-dependencies'],
 	'pre-release': OPTIONS['pre-release'],
 	'start-server': { type: 'boolean', cat: 'e', description: nls.localize('start-server', "Start the server when installing or uninstalling extensions. To be used in combination with 'install-extension', 'install-builtin-extension' and 'uninstall-extension'.") },
 
@@ -73,15 +83,20 @@ export const serverOptions: OptionDescriptions<ServerParsedArgs> = {
 
 	'enable-remote-auto-shutdown': { type: 'boolean' },
 	'remote-auto-shutdown-without-delay': { type: 'boolean' },
+	'inspect-ptyhost': { type: 'string', allowEmptyValue: true },
+
+	'agent-host-port': { type: 'string', cat: 'o', args: 'port', description: nls.localize('agent-host-port', "The port the agent host WebSocket server should listen on.") },
+	'agent-host-path': { type: 'string', cat: 'o', args: 'path', description: nls.localize('agent-host-path', "The path to a socket file for the agent host WebSocket server to listen on.") },
 
 	'use-host-proxy': { type: 'boolean' },
 	'without-browser-env-var': { type: 'boolean' },
+	'reconnection-grace-time': { type: 'string', cat: 'o', args: 'seconds', description: nls.localize('reconnection-grace-time', "Override the reconnection grace time window in seconds. Defaults to 10800 (3 hours).") },
 
 	/* ----- server cli ----- */
 
 	'help': OPTIONS['help'],
 	'version': OPTIONS['version'],
-	'shell-integration': OPTIONS['shell-integration'],
+	'locate-shell-integration-path': OPTIONS['locate-shell-integration-path'],
 
 	'compatibility': { type: 'string' },
 
@@ -93,9 +108,17 @@ export interface ServerParsedArgs {
 	/* ----- server setup ----- */
 
 	host?: string;
+	/**
+	 * A port or a port range
+	 */
 	port?: string;
-	'pick-port'?: string;
 	'socket-path'?: string;
+
+	/**
+	 * The path under which the web UI and the code server is provided.
+	 * By defaults it is '/'.`
+	 */
+	'server-base-path'?: string;
 
 	/**
 	 * A secret token that must be provided by the web client with all requests.
@@ -144,26 +167,29 @@ export interface ServerParsedArgs {
 	'enable-smoke-test-driver'?: boolean;
 
 	'disable-telemetry'?: boolean;
+	'disable-experiments'?: boolean;
 	'file-watcher-polling'?: string;
 
-	'log'?: string;
+	'log'?: string[];
 	'logsPath'?: string;
 
 	'force-disable-user-env'?: boolean;
+	'enable-proposed-api'?: string[];
 
 	/* ----- vs code web options ----- */
 
 	'default-workspace'?: string;
 	'default-folder'?: string;
 
-	/** @deprecated, use default-workspace instead */
+	/** @deprecated use default-workspace instead */
 	workspace: string;
-	/** @deprecated, use default-folder instead */
+	/** @deprecated use default-folder instead */
 	folder: string;
 
 
 	'enable-sync'?: boolean;
 	'github-auth'?: string;
+	'use-test-resolver'?: boolean;
 
 	/* ----- extension management ----- */
 
@@ -172,6 +198,7 @@ export interface ServerParsedArgs {
 	'builtin-extensions-dir'?: string;
 	'install-extension'?: string[];
 	'install-builtin-extension'?: string[];
+	'update-extensions'?: boolean;
 	'uninstall-extension'?: string[];
 	'list-extensions'?: boolean;
 	'locate-extension'?: string[];
@@ -180,6 +207,8 @@ export interface ServerParsedArgs {
 	force?: boolean; // used by install-extension
 	'do-not-sync'?: boolean; // used by install-extension
 	'pre-release'?: boolean; // used by install-extension
+	'do-not-include-pack-dependencies'?: boolean; // used by install-extension
+
 
 	'start-server'?: boolean;
 
@@ -187,14 +216,19 @@ export interface ServerParsedArgs {
 
 	'enable-remote-auto-shutdown'?: boolean;
 	'remote-auto-shutdown-without-delay'?: boolean;
+	'inspect-ptyhost'?: string;
+
+	'agent-host-port'?: string;
+	'agent-host-path'?: string;
 
 	'use-host-proxy'?: boolean;
 	'without-browser-env-var'?: boolean;
+	'reconnection-grace-time'?: string;
 
 	/* ----- server cli ----- */
 	help: boolean;
 	version: boolean;
-	'shell-integration'?: string;
+	'locate-shell-integration-path'?: string;
 
 	compatibility: string;
 
@@ -204,9 +238,39 @@ export interface ServerParsedArgs {
 export const IServerEnvironmentService = refineServiceDecorator<IEnvironmentService, IServerEnvironmentService>(IEnvironmentService);
 
 export interface IServerEnvironmentService extends INativeEnvironmentService {
+	readonly machineSettingsResource: URI;
+	readonly mcpResource: URI;
 	readonly args: ServerParsedArgs;
+	readonly reconnectionGraceTime: number;
 }
 
 export class ServerEnvironmentService extends NativeEnvironmentService implements IServerEnvironmentService {
+	@memoize
+	override get userRoamingDataHome(): URI { return this.appSettingsHome; }
+	@memoize
+	get machineSettingsResource(): URI { return joinPath(URI.file(join(this.userDataPath, 'Machine')), 'settings.json'); }
+	@memoize
+	get mcpResource(): URI { return joinPath(URI.file(join(this.userDataPath, 'User')), 'mcp.json'); }
 	override get args(): ServerParsedArgs { return super.args as ServerParsedArgs; }
+	@memoize
+	get reconnectionGraceTime(): number { return parseGraceTime(this.args['reconnection-grace-time'], ProtocolConstants.ReconnectionGraceTime); }
+}
+
+function parseGraceTime(rawValue: string | undefined, fallback: number): number {
+	if (typeof rawValue !== 'string' || rawValue.trim().length === 0) {
+		console.log(`[reconnection-grace-time] No CLI argument provided, using default: ${fallback}ms (${Math.floor(fallback / 1000)}s)`);
+		return fallback;
+	}
+	const parsedSeconds = Number(rawValue);
+	if (!isFinite(parsedSeconds) || parsedSeconds < 0) {
+		console.log(`[reconnection-grace-time] Invalid value '${rawValue}', using default: ${fallback}ms (${Math.floor(fallback / 1000)}s)`);
+		return fallback;
+	}
+	const millis = Math.floor(parsedSeconds * 1000);
+	if (!isFinite(millis) || millis > Number.MAX_SAFE_INTEGER) {
+		console.log(`[reconnection-grace-time] Value too large '${rawValue}', using default: ${fallback}ms (${Math.floor(fallback / 1000)}s)`);
+		return fallback;
+	}
+	console.log(`[reconnection-grace-time] Parsed CLI argument: ${parsedSeconds}s -> ${millis}ms`);
+	return millis;
 }

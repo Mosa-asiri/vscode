@@ -3,44 +3,44 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { ChildProcess, spawn, SpawnOptions } from 'child_process';
-import { chmodSync, existsSync, readFileSync, statSync, truncateSync, unlinkSync } from 'fs';
-import { homedir, release, tmpdir } from 'os';
+import { ChildProcess, spawn, SpawnOptions, StdioOptions } from 'child_process';
+import { chmodSync, existsSync, readFileSync, statSync, truncateSync, unlinkSync, promises } from 'fs';
+import { homedir, tmpdir } from 'os';
 import type { ProfilingSession, Target } from 'v8-inspect-profiler';
-import { Event } from 'vs/base/common/event';
-import { isAbsolute, resolve, join } from 'vs/base/common/path';
-import { IProcessEnvironment, isMacintosh, isWindows } from 'vs/base/common/platform';
-import { randomPort } from 'vs/base/common/ports';
-import { isString } from 'vs/base/common/types';
-import { whenDeleted, writeFileSync } from 'vs/base/node/pfs';
-import { findFreePort } from 'vs/base/node/ports';
-import { watchFileContents } from 'vs/platform/files/node/watcher/nodejs/nodejsWatcherLib';
-import { NativeParsedArgs } from 'vs/platform/environment/common/argv';
-import { buildHelpMessage, buildVersionMessage, OPTIONS } from 'vs/platform/environment/node/argv';
-import { addArg, parseCLIProcessArgv } from 'vs/platform/environment/node/argvHelper';
-import { getStdinFilePath, hasStdinWithoutTty, readFromStdin, stdinDataListener } from 'vs/platform/environment/node/stdin';
-import { createWaitMarkerFile } from 'vs/platform/environment/node/wait';
-import product from 'vs/platform/product/common/product';
-import { CancellationTokenSource } from 'vs/base/common/cancellation';
-import { randomPath } from 'vs/base/common/extpath';
-import { Utils } from 'vs/platform/profiling/common/profiling';
-import { dirname } from 'vs/base/common/resources';
-import { FileAccess } from 'vs/base/common/network';
+import { Event } from '../../base/common/event.js';
+import { isAbsolute, resolve, join, dirname } from '../../base/common/path.js';
+import { IProcessEnvironment, isMacintosh, isWindows } from '../../base/common/platform.js';
+import { randomPort } from '../../base/common/ports.js';
+import { whenDeleted, writeFileSync } from '../../base/node/pfs.js';
+import { findFreePort } from '../../base/node/ports.js';
+import { watchFileContents } from '../../platform/files/node/watcher/nodejs/nodejsWatcherLib.js';
+import { NativeParsedArgs } from '../../platform/environment/common/argv.js';
+import { buildHelpMessage, buildStdinMessage, buildVersionMessage, NATIVE_CLI_COMMANDS, OPTIONS } from '../../platform/environment/node/argv.js';
+import { addArg, parseCLIProcessArgv } from '../../platform/environment/node/argvHelper.js';
+import { getStdinFilePath, hasStdinWithoutTty, readFromStdin, stdinDataListener } from '../../platform/environment/node/stdin.js';
+import { createWaitMarkerFileSync } from '../../platform/environment/node/wait.js';
+import product from '../../platform/product/common/product.js';
+import { CancellationTokenSource } from '../../base/common/cancellation.js';
+import { isUNC, randomPath } from '../../base/common/extpath.js';
+import { Utils } from '../../platform/profiling/common/profiling.js';
+import { FileAccess } from '../../base/common/network.js';
+import { cwd } from '../../base/common/process.js';
+import { addUNCHostToAllowlist } from '../../base/node/unc.js';
+import { URI } from '../../base/common/uri.js';
+import { DeferredPromise } from '../../base/common/async.js';
 
 function shouldSpawnCliProcess(argv: NativeParsedArgs): boolean {
 	return !!argv['install-source']
 		|| !!argv['list-extensions']
 		|| !!argv['install-extension']
 		|| !!argv['uninstall-extension']
+		|| !!argv['update-extensions']
 		|| !!argv['locate-extension']
+		|| !!argv['add-mcp']
 		|| !!argv['telemetry'];
 }
 
-interface IMainCli {
-	main: (argv: NativeParsedArgs) => Promise<void>;
-}
-
-export async function main(argv: string[]): Promise<any> {
+export async function main(argv: string[]): Promise<void> {
 	let args: NativeParsedArgs;
 
 	try {
@@ -50,10 +50,54 @@ export async function main(argv: string[]): Promise<any> {
 		return;
 	}
 
-	// Help
+	for (const subcommand of NATIVE_CLI_COMMANDS) {
+		if (args[subcommand]) {
+			if (!product.tunnelApplicationName) {
+				console.error(`'${subcommand}' command not supported in ${product.applicationName}`);
+				return;
+			}
+			const env: IProcessEnvironment = {
+				...process.env
+			};
+			// bootstrap-esm.js determines the electron environment based
+			// on the following variable. For the server we need to unset
+			// it to prevent importing any electron specific modules.
+			// Refs https://github.com/microsoft/vscode/issues/221883
+			delete env['ELECTRON_RUN_AS_NODE'];
+
+			const tunnelArgs = argv.slice(argv.indexOf(subcommand) + 1); // all arguments behind `tunnel`
+			return new Promise((resolve, reject) => {
+				let tunnelProcess: ChildProcess;
+				const stdio: StdioOptions = ['ignore', 'pipe', 'pipe'];
+				if (process.env['VSCODE_DEV']) {
+					tunnelProcess = spawn('cargo', ['run', '--', subcommand, ...tunnelArgs], { cwd: join(getAppRoot(), 'cli'), stdio, env });
+				} else {
+					const appPath = process.platform === 'darwin'
+						// ./Contents/MacOS/Code => ./Contents/Resources/app/bin/code-tunnel-insiders
+						? join(dirname(dirname(process.execPath)), 'Resources', 'app')
+						: dirname(process.execPath);
+					const tunnelCommand = join(appPath, 'bin', `${product.tunnelApplicationName}${isWindows ? '.exe' : ''}`);
+					tunnelProcess = spawn(tunnelCommand, [subcommand, ...tunnelArgs], { cwd: cwd(), stdio, env });
+				}
+
+				tunnelProcess.stdout!.pipe(process.stdout);
+				tunnelProcess.stderr!.pipe(process.stderr);
+				tunnelProcess.on('exit', resolve);
+				tunnelProcess.on('error', reject);
+			});
+		}
+	}
+
+	// Help (general)
 	if (args.help) {
 		const executable = `${product.applicationName}${isWindows ? '.exe' : ''}`;
 		console.log(buildHelpMessage(product.nameLong, executable, product.version, OPTIONS));
+	}
+
+	// Help (chat)
+	else if (args.chat?.help) {
+		const executable = `${product.applicationName}${isWindows ? '.exe' : ''}`;
+		console.log(buildHelpMessage(product.nameLong, executable, product.version, OPTIONS.chat.options, { isChat: true }));
 	}
 
 	// Version Info
@@ -62,27 +106,38 @@ export async function main(argv: string[]): Promise<any> {
 	}
 
 	// Shell integration
-	else if (args['shell-integration']) {
-		// Silently fail when the terminal is not VS Code's integrated terminal
-		if (process.env['TERM_PROGRAM'] !== 'vscode') {
-			return;
-		}
+	else if (args['locate-shell-integration-path']) {
 		let file: string;
-		switch (args['shell-integration']) {
-			// Usage: `[[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --shell-integration bash)"`
+		switch (args['locate-shell-integration-path']) {
+			// Usage: `[[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --locate-shell-integration-path bash)"`
 			case 'bash': file = 'shellIntegration-bash.sh'; break;
-			// Usage: `if ($env:TERM_PROGRAM -eq "vscode") { . "$(code --shell-integration pwsh)" }`
+			// Usage: `if ($env:TERM_PROGRAM -eq "vscode") { . "$(code --locate-shell-integration-path pwsh)" }`
 			case 'pwsh': file = 'shellIntegration.ps1'; break;
-			// Usage: `[[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --shell-integration zsh)"`
+			// Usage: `[[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --locate-shell-integration-path zsh)"`
 			case 'zsh': file = 'shellIntegration-rc.zsh'; break;
-			default: throw new Error('Error using --shell-integration: Invalid shell type');
+			// Usage: `string match -q "$TERM_PROGRAM" "vscode"; and . (code --locate-shell-integration-path fish)`
+			case 'fish': file = 'shellIntegration.fish'; break;
+			default: throw new Error('Error using --locate-shell-integration-path: Invalid shell type');
 		}
-		console.log(join(dirname(FileAccess.asFileUri('', require)).fsPath, 'out', 'vs', 'workbench', 'contrib', 'terminal', 'browser', 'media', file));
+		console.log(join(getAppRoot(), 'out', 'vs', 'workbench', 'contrib', 'terminal', 'common', 'scripts', file));
 	}
 
 	// Extensions Management
 	else if (shouldSpawnCliProcess(args)) {
-		const cli = await new Promise<IMainCli>((resolve, reject) => require(['vs/code/node/cliProcessMain'], resolve, reject));
+
+		// We do not bundle `cliProcessMain.js` into this file because
+		// it is rather large and only needed for very few CLI operations.
+		// This has the downside that we need to know if we run OSS or
+		// built, because our location on disk is different if built.
+
+		let cliProcessMain: string;
+		if (process.env['VSCODE_DEV']) {
+			cliProcessMain = './cliProcessMain.js';
+		} else {
+			cliProcessMain = './vs/code/node/cliProcessMain.js';
+		}
+
+		const cli = await import(cliProcessMain);
 		await cli.main(args);
 
 		return;
@@ -90,8 +145,30 @@ export async function main(argv: string[]): Promise<any> {
 
 	// Write File
 	else if (args['file-write']) {
-		const source = args._[0];
-		const target = args._[1];
+		const argsFile = args._[0];
+		if (!argsFile || !isAbsolute(argsFile) || !existsSync(argsFile) || !statSync(argsFile).isFile()) {
+			throw new Error('Using --file-write with invalid arguments.');
+		}
+
+		let source: string | undefined;
+		let target: string | undefined;
+		try {
+			const argsContents: { source: string; target: string } = JSON.parse(readFileSync(argsFile, 'utf8'));
+			source = argsContents.source;
+			target = argsContents.target;
+		} catch (error) {
+			throw new Error('Using --file-write with invalid arguments.');
+		}
+
+		// Windows: set the paths as allowed UNC paths given
+		// they are explicitly provided by the user as arguments
+		if (isWindows) {
+			for (const path of [source, target]) {
+				if (typeof path === 'string' && isUNC(path)) {
+					addUNCHostToAllowlist(URI.file(path).authority);
+				}
+			}
+		}
 
 		// Validate
 		if (
@@ -106,9 +183,9 @@ export async function main(argv: string[]): Promise<any> {
 		try {
 
 			// Check for readonly status and chmod if so if we are told so
-			let targetMode: number = 0;
+			let targetMode = 0;
 			let restoreMode = false;
-			if (!!args['file-chmod']) {
+			if (args['file-chmod']) {
 				targetMode = statSync(target).mode;
 				if (!(targetMode & 0o200 /* File mode indicating writable by owner */)) {
 					chmodSync(target, targetMode | 0o200);
@@ -152,19 +229,32 @@ export async function main(argv: string[]): Promise<any> {
 
 		const processCallbacks: ((child: ChildProcess) => Promise<void>)[] = [];
 
-		const verbose = args.verbose || args.status;
-		if (verbose) {
+		if (args.verbose) {
 			env['ELECTRON_ENABLE_LOGGING'] = '1';
+		}
 
+		if (args.verbose || args.status) {
 			processCallbacks.push(async child => {
-				child.stdout!.on('data', (data: Buffer) => console.log(data.toString('utf8').trim()));
-				child.stderr!.on('data', (data: Buffer) => console.log(data.toString('utf8').trim()));
+				child.stdout?.on('data', (data: Buffer) => console.log(data.toString('utf8').trim()));
+				child.stderr?.on('data', (data: Buffer) => console.log(data.toString('utf8').trim()));
 
 				await Event.toPromise(Event.fromNodeEventEmitter(child, 'exit'));
 			});
 		}
 
-		const hasReadStdinArg = args._.some(a => a === '-');
+		// Handle --transient option
+		if (args['transient']) {
+			const tempParentDir = randomPath(tmpdir(), 'vscode');
+			const tempUserDataDir = join(tempParentDir, 'data');
+			const tempExtensionsDir = join(tempParentDir, 'extensions');
+
+			addArg(argv, '--user-data-dir', tempUserDataDir);
+			addArg(argv, '--extensions-dir', tempExtensionsDir);
+
+			console.log(`State is temporarily stored. Relaunch this state with: ${product.applicationName} --user-data-dir "${tempUserDataDir}" --extensions-dir "${tempExtensionsDir}"`);
+		}
+
+		const hasReadStdinArg = args._.some(arg => arg === '-') || args.chat?._.some(arg => arg === '-');
 		if (hasReadStdinArg) {
 			// remove the "-" argument when we read from stdin
 			args._ = args._.filter(a => a !== '-');
@@ -181,17 +271,37 @@ export async function main(argv: string[]): Promise<any> {
 			if (hasReadStdinArg) {
 				stdinFilePath = getStdinFilePath();
 
-				// returns a file path where stdin input is written into (write in progress).
 				try {
-					readFromStdin(stdinFilePath, !!verbose); // throws error if file can not be written
+					const readFromStdinDone = new DeferredPromise<void>();
+					await readFromStdin(stdinFilePath, !!args.verbose, () => readFromStdinDone.complete());
+					if (!args.wait) {
 
-					// Make sure to open tmp file
-					addArg(argv, stdinFilePath);
+						// if `--wait` is not provided, we keep this process alive
+						// for at least as long as the stdin stream is open to
+						// ensure that we read all the data.
+						// the downside is that the Code CLI process will then not
+						// terminate until stdin is closed, but users can always
+						// pass `--wait` to prevent that from happening (this is
+						// actually what we enforced until v1.85.x but then was
+						// changed to not enforce it anymore).
+						// a solution in the future would possibly be to exit, when
+						// the Code process exits. this would require some careful
+						// solution though in case Code is already running and this
+						// is a second instance telling the first instance what to
+						// open.
 
-					// Enable --wait to get all data and ignore adding this to history
-					addArg(argv, '--wait');
-					addArg(argv, '--skip-add-to-recently-opened');
-					args.wait = true;
+						processCallbacks.push(() => readFromStdinDone.p);
+					}
+
+					if (args.chat) {
+						// Make sure to add tmp file as context to chat
+						addArg(argv, '--add-file', stdinFilePath);
+					} else {
+						// Make sure to open tmp file as editor but ignore
+						// it in the "recently open" list
+						addArg(argv, stdinFilePath);
+						addArg(argv, '--skip-add-to-recently-opened');
+					}
 
 					console.log(`Reading from stdin via: ${stdinFilePath}`);
 				} catch (e) {
@@ -204,17 +314,11 @@ export async function main(argv: string[]): Promise<any> {
 				// if we detect that data flows into via stdin after a certain timeout.
 				processCallbacks.push(_ => stdinDataListener(1000).then(dataReceived => {
 					if (dataReceived) {
-						if (isWindows) {
-							console.log(`Run with '${product.applicationName} -' to read output from another program (e.g. 'echo Hello World | ${product.applicationName} -').`);
-						} else {
-							console.log(`Run with '${product.applicationName} -' to read from stdin (e.g. 'ps aux | grep code | ${product.applicationName} -').`);
-						}
+						console.log(buildStdinMessage(product.applicationName, !!args.chat));
 					}
 				}));
 			}
 		}
-
-		const isMacOSBigSurOrNewer = isMacintosh && release() > '20.0.0';
 
 		// If we are started with --wait create a random temporary file
 		// and pass it over to the starting instance. We can use this file
@@ -222,7 +326,7 @@ export async function main(argv: string[]): Promise<any> {
 		// is closed and then exit the waiting process.
 		let waitMarkerFilePath: string | undefined;
 		if (args.wait) {
-			waitMarkerFilePath = createWaitMarkerFile(verbose);
+			waitMarkerFilePath = createWaitMarkerFileSync(args.verbose);
 			if (waitMarkerFilePath) {
 				addArg(argv, '--waitMarkerFilePath', waitMarkerFilePath);
 			}
@@ -233,8 +337,8 @@ export async function main(argv: string[]): Promise<any> {
 			// - the launched process terminates (e.g. due to a crash)
 			processCallbacks.push(async child => {
 				let childExitPromise;
-				if (isMacOSBigSurOrNewer) {
-					// On Big Sur, we resolve the following promise only when the child,
+				if (isMacintosh) {
+					// On macOS, we resolve the following promise only when the child,
 					// i.e. the open command, exited with a signal or error. Otherwise, we
 					// wait for the marker file to be deleted or for the child to error.
 					childExitPromise = new Promise<void>(resolve => {
@@ -269,6 +373,7 @@ export async function main(argv: string[]): Promise<any> {
 		// to get better profile traces. Last, we listen on stdout for a signal that tells us to
 		// stop profiling.
 		if (args['prof-startup']) {
+			const profileHost = '127.0.0.1';
 			const portMain = await findFreePort(randomPort(), 10, 3000);
 			const portRenderer = await findFreePort(portMain + 1, 10, 3000);
 			const portExthost = await findFreePort(portRenderer + 1, 10, 3000);
@@ -296,7 +401,7 @@ export async function main(argv: string[]): Promise<any> {
 
 						let session: ProfilingSession;
 						try {
-							session = await profiler.startProfiling(opts);
+							session = await profiler.startProfiling({ ...opts, host: profileHost });
 						} catch (err) {
 							console.error(`FAILED to start profiling for '${name}' on port '${opts.port}'`);
 						}
@@ -336,7 +441,7 @@ export async function main(argv: string[]): Promise<any> {
 									return false;
 								}
 								if (target.type === 'page') {
-									return target.url.indexOf('workbench/workbench.html') > 0;
+									return target.url.indexOf('workbench/workbench.html') > 0 || target.url.indexOf('workbench/workbench-dev.html') > 0;
 								} else {
 									return true;
 								}
@@ -348,8 +453,7 @@ export async function main(argv: string[]): Promise<any> {
 					const extHost = await extHostProfileRequest;
 					const renderer = await rendererProfileRequest;
 
-					// wait for the renderer to delete the
-					// marker file
+					// wait for the renderer to delete the marker file
 					await whenDeleted(filenamePrefix);
 
 					// stop profiling
@@ -366,29 +470,39 @@ export async function main(argv: string[]): Promise<any> {
 			});
 		}
 
-		const jsFlags = args['js-flags'];
-		if (isString(jsFlags)) {
-			const match = /max_old_space_size=(\d+)/g.exec(jsFlags);
-			if (match && !args['max-memory']) {
-				addArg(argv, `--max-memory=${match[1]}`);
-			}
-		}
-
 		const options: SpawnOptions = {
 			detached: true,
 			env
 		};
 
-		if (!verbose) {
+		if (!args.verbose) {
 			options['stdio'] = 'ignore';
 		}
 
 		let child: ChildProcess;
-		if (!isMacOSBigSurOrNewer) {
-			// We spawn process.execPath directly
-			child = spawn(process.execPath, argv.slice(2), options);
+		if (!isMacintosh) {
+			if (!args.verbose && args.status) {
+				options['stdio'] = ['ignore', 'pipe', 'ignore']; // restore ability to see output when --status is used
+			}
+
+			// Figure out the app to launch: with --agents we try to launch the embedded app on Windows
+			let execToLaunch = process.execPath;
+			if (isWindows && args.agents && product.win32SiblingExeBasename) {
+				const siblingExe = join(dirname(process.execPath), `${product.win32SiblingExeBasename}.exe`);
+				try {
+					if (statSync(siblingExe).isFile()) {
+						execToLaunch = siblingExe;
+						argv = argv.filter(arg => arg !== '--agents');
+					}
+				} catch (error) {
+					/* may not exist on disk */
+				}
+			}
+
+			// We spawn the resolved executable directly
+			child = spawn(execToLaunch, argv.slice(2), options);
 		} else {
-			// On Big Sur, we spawn using the open command to obtain behavior
+			// On macOS, we spawn using the open command to obtain behavior
 			// similar to if the app was launched from the dock
 			// https://github.com/microsoft/vscode/issues/102975
 
@@ -400,16 +514,34 @@ export async function main(argv: string[]): Promise<any> {
 			//    This way, Mac does not automatically try to foreground the new instance, which causes
 			//    focusing issues when the new instance only sends data to a previous instance and then closes.
 			const spawnArgs = ['-n', '-g'];
-			// -a opens the given application.
-			spawnArgs.push('-a', process.execPath); // -a: opens a specific application
 
-			if (verbose) {
+			// Figure out the app to launch: with --agents we try to launch the embedded app
+			let appToLaunch = process.execPath;
+			if (args.agents) {
+				// process.execPath is e.g. /Applications/Code.app/Contents/MacOS/Electron
+				// Embedded app is at /Applications/Code.app/Contents/Applications/<EmbeddedApp>.app
+				const contentsPath = dirname(dirname(process.execPath));
+				const applicationsPath = join(contentsPath, 'Applications');
+				try {
+					const files = await promises.readdir(applicationsPath);
+					const embeddedApp = files.find(file => file.endsWith('.app'));
+					if (embeddedApp) {
+						appToLaunch = join(applicationsPath, embeddedApp);
+						argv = argv.filter(arg => arg !== '--agents');
+					}
+				} catch (error) {
+					/* may not exist on disk */
+				}
+			}
+			spawnArgs.push('-a', appToLaunch); // -a opens the given application.
+
+			if (args.verbose || args.status) {
 				spawnArgs.push('--wait-apps'); // `open --wait-apps`: blocks until the launched app is closed (even if they were already running)
 
 				// The open command only allows for redirecting stderr and stdout to files,
 				// so we make it redirect those to temp files, and then use a logger to
 				// redirect the file output to the console
-				for (const outputType of ['stdout', 'stderr']) {
+				for (const outputType of args.verbose ? ['stdout', 'stderr'] : ['stdout']) {
 
 					// Tmp file to target output to
 					const tmpName = randomPath(tmpdir(), `code-${outputType}`);
@@ -465,8 +597,12 @@ export async function main(argv: string[]): Promise<any> {
 			child = spawn('open', spawnArgs, { ...options, env: {} });
 		}
 
-		return Promise.all(processCallbacks.map(callback => callback(child)));
+		await Promise.all(processCallbacks.map(callback => callback(child)));
 	}
+}
+
+function getAppRoot() {
+	return dirname(FileAccess.asFileUri('').fsPath);
 }
 
 function eventuallyExit(code: number): void {

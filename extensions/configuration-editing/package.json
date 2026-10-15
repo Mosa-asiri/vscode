@@ -2,7 +2,7 @@
   "name": "configuration-editing",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.0",
+  "version": "10.0.0",
   "publisher": "vscode",
   "license": "MIT",
   "engines": {
@@ -10,18 +10,30 @@
   },
   "icon": "images/icon.png",
   "activationEvents": [
+    "onProfile",
+    "onProfile:github",
     "onLanguage:json",
     "onLanguage:jsonc"
+  ],
+  "enabledApiProposals": [
+    "profileContentHandlers"
   ],
   "main": "./out/configurationEditingMain",
   "browser": "./dist/browser/configurationEditingMain",
   "scripts": {
     "compile": "gulp compile-extension:configuration-editing",
-    "watch": "gulp watch-extension:configuration-editing"
+    "watch": "gulp watch-extension:configuration-editing",
+    "compile-web": "npm-run-all2 -lp bundle-web typecheck-web",
+    "bundle-web": "node ./esbuild.browser.mts",
+    "typecheck-web": "tsgo --project ./tsconfig.browser.json --noEmit",
+    "watch-web": "npm-run-all2 -lp watch-bundle-web watch-typecheck-web",
+    "watch-bundle-web": "node ./esbuild.browser.mts --watch",
+    "watch-typecheck-web": "tsgo --project ./tsconfig.browser.json --noEmit --watch"
   },
   "dependencies": {
-    "jsonc-parser": "^2.2.1",
-    "vscode-nls": "^5.0.0"
+    "@octokit/rest": "^21.1.1",
+    "jsonc-parser": "^3.2.0",
+    "tunnel": "^0.0.6"
   },
   "capabilities": {
     "virtualWorkspaces": true,
@@ -37,25 +49,22 @@
           ".code-workspace",
           "language-configuration.json",
           "icon-theme.json",
-          "color-theme.json",
-          ".code-snippets"
+          "color-theme.json"
         ],
         "filenames": [
           "settings.json",
           "launch.json",
           "tasks.json",
+          "mcp.json",
           "keybindings.json",
           "extensions.json",
           "argv.json",
           "profiles.json",
           "devcontainer.json",
           ".devcontainer.json"
-        ],
-        "filenamePatterns": [
-          "**/User/snippets/*.json",
-          "**/User/profiles/*/snippets/*.json"
         ]
-      }, {
+      },
+      {
         "id": "json",
         "extensions": [
           ".code-profile"
@@ -69,6 +78,10 @@
       },
       {
         "fileMatch": "%APP_SETTINGS_HOME%/keybindings.json",
+        "url": "vscode://schemas/keybindings"
+      },
+      {
+        "fileMatch": "%APP_SETTINGS_HOME%/profiles/*/keybindings.json",
         "url": "vscode://schemas/keybindings"
       },
       {
@@ -112,11 +125,23 @@
         "url": "vscode://schemas/tasks"
       },
       {
+        "fileMatch": "/.vscode/mcp.json",
+        "url": "vscode://schemas/mcp"
+      },
+      {
         "fileMatch": "%APP_SETTINGS_HOME%/tasks.json",
         "url": "vscode://schemas/tasks"
       },
       {
         "fileMatch": "%APP_SETTINGS_HOME%/snippets/*.json",
+        "url": "vscode://schemas/snippets"
+      },
+      {
+        "fileMatch": "%APP_SETTINGS_HOME%/prompts/*.toolsets.jsonc",
+        "url": "vscode://schemas/toolsets"
+      },
+      {
+        "fileMatch": "%APP_SETTINGS_HOME%/profiles/*/snippets/.json",
         "url": "vscode://schemas/snippets"
       },
       {
@@ -133,11 +158,11 @@
       },
       {
         "fileMatch": "devcontainer.json",
-        "url": "./schemas/devContainer.schema.generated.json"
+        "url": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json"
       },
       {
         "fileMatch": ".devcontainer.json",
-        "url": "./schemas/devContainer.schema.generated.json"
+        "url": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json"
       },
       {
         "fileMatch": "%APP_SETTINGS_HOME%/globalStorage/ms-vscode-remote.remote-containers/nameConfigs/*.json",
@@ -154,7 +179,7 @@
     ]
   },
   "devDependencies": {
-    "@types/node": "16.x"
+    "@types/node": "22.x"
   },
   "repository": {
     "type": "git",

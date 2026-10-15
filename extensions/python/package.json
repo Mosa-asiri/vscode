@@ -2,12 +2,13 @@
   "name": "python",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.0",
+  "version": "10.0.0",
   "publisher": "vscode",
   "license": "MIT",
   "engines": {
     "vscode": "*"
   },
+  "categories": ["Programming Languages"],
   "contributes": {
     "languages": [
       {
@@ -28,7 +29,6 @@
           "py"
         ],
         "filenames": [
-          "Snakefile",
           "SConstruct",
           "SConscript"
         ],
@@ -46,7 +46,13 @@
         "scopeName": "source.regexp.python",
         "path": "./syntaxes/MagicRegExp.tmLanguage.json"
       }
-    ]
+    ],
+    "configurationDefaults": {
+      "[python]": {
+        "diffEditor.ignoreTrimWhitespace": false,
+        "editor.defaultColorDecorators": "never"
+      }
+    }
   },
   "scripts": {
     "update-grammar": "node ../node_modules/vscode-grammar-updater/bin MagicStack/MagicPython grammars/MagicPython.tmLanguage ./syntaxes/MagicPython.tmLanguage.json grammars/MagicRegExp.tmLanguage ./syntaxes/MagicRegExp.tmLanguage.json"

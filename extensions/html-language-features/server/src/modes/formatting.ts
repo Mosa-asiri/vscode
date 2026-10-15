@@ -3,9 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { LanguageModes, Settings, LanguageModeRange, TextDocument, Range, TextEdit, FormattingOptions, Position } from './languageModes';
-import { pushAll } from '../utils/arrays';
-import { isEOL } from '../utils/strings';
+import { LanguageModes, Settings, LanguageModeRange, TextDocument, Range, TextEdit, FormattingOptions, Position } from './languageModes.js';
+import { pushAll } from '../utils/arrays.js';
+import { isEOL } from '../utils/strings.js';
 
 export async function format(languageModes: LanguageModes, document: TextDocument, formatRange: Range, formattingOptions: FormattingOptions, settings: Settings | undefined, enabledModes: { [mode: string]: boolean }) {
 	const result: TextEdit[] = [];
@@ -54,7 +54,11 @@ export async function format(languageModes: LanguageModes, document: TextDocumen
 	// perform a html format and apply changes to a new document
 	const htmlMode = languageModes.getMode('html')!;
 	const htmlEdits = await htmlMode.format!(document, formatRange, formattingOptions, settings);
-	const htmlFormattedContent = TextDocument.applyEdits(document, htmlEdits);
+	let htmlFormattedContent = TextDocument.applyEdits(document, htmlEdits);
+	if (formattingOptions.insertFinalNewline && endOffset === content.length && !htmlFormattedContent.endsWith('\n')) {
+		htmlFormattedContent = htmlFormattedContent + '\n';
+		htmlEdits.push(TextEdit.insert(endPos, '\n'));
+	}
 	const newDocument = TextDocument.create(document.uri + '.tmp', document.languageId, document.version, htmlFormattedContent);
 	try {
 		// run embedded formatters on html formatted content: - formatters see correct initial indent

@@ -6,18 +6,17 @@
 import * as jsonc from 'jsonc-parser';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import * as nls from 'vscode-nls';
 import { wait } from '../test/testUtils';
 import { ITypeScriptServiceClient, ServerResponse } from '../typescriptService';
 import { coalesce } from '../utils/arrays';
+import { readUnifiedConfig } from '../utils/configuration';
 import { Disposable } from '../utils/dispose';
 import { exists } from '../utils/fs';
-import { isTsConfigFileName } from '../utils/languageDescription';
+import { isTsConfigFileName } from '../configuration/languageDescription';
 import { Lazy } from '../utils/lazy';
-import { isImplicitProjectConfigFile } from '../utils/tsconfig';
+import { isImplicitProjectConfigFile } from '../tsconfig';
 import { TSConfig, TsConfigProvider } from './tsconfigProvider';
 
-const localize = nls.loadMessageBundle();
 
 enum AutoDetect {
 	on = 'on',
@@ -55,11 +54,11 @@ class TscTaskProvider extends Disposable implements vscode.TaskProvider {
 
 	public async provideTasks(token: vscode.CancellationToken): Promise<vscode.Task[]> {
 		const folders = vscode.workspace.workspaceFolders;
-		if ((this.autoDetect === AutoDetect.off) || !folders || !folders.length) {
+		if ((this.autoDetect === AutoDetect.off) || !folders?.length) {
 			return [];
 		}
 
-		const configPaths: Set<string> = new Set();
+		const configPaths = new Set<string>();
 		const tasks: vscode.Task[] = [];
 		for (const project of await this.getAllTsConfigs(token)) {
 			if (!configPaths.has(project.fsPath)) {
@@ -74,7 +73,7 @@ class TscTaskProvider extends Disposable implements vscode.TaskProvider {
 		const definition = <TypeScriptTaskDefinition>task.definition;
 		if (/\\tsconfig.*\.json/.test(definition.tsconfig)) {
 			// Warn that the task has the wrong slash type
-			vscode.window.showWarningMessage(localize('badTsConfig', "TypeScript Task in tasks.json contains \"\\\\\". TypeScript tasks tsconfig must use \"/\""));
+			vscode.window.showWarningMessage(vscode.l10n.t("TypeScript Task in tasks.json contains \"\\\\\". TypeScript tasks tsconfig must use \"/\""));
 			return undefined;
 		}
 
@@ -200,7 +199,7 @@ class TscTaskProvider extends Disposable implements vscode.TaskProvider {
 		if (editor) {
 			const document = editor.document;
 			if (document && (document.languageId === 'typescript' || document.languageId === 'typescriptreact')) {
-				return this.client.value.toPath(document.uri);
+				return this.client.value.toTsFilePath(document.uri);
 			}
 		}
 		return undefined;
@@ -210,7 +209,7 @@ class TscTaskProvider extends Disposable implements vscode.TaskProvider {
 		const buildTask = new vscode.Task(
 			buildTaskidentifier,
 			workspaceFolder || vscode.TaskScope.Workspace,
-			localize('buildTscLabel', 'build - {0}', label),
+			vscode.l10n.t("build - {0}", label),
 			'tsc',
 			new vscode.ShellExecution(command, args),
 			'$tsc');
@@ -223,7 +222,7 @@ class TscTaskProvider extends Disposable implements vscode.TaskProvider {
 		const watchTask = new vscode.Task(
 			watchTaskidentifier,
 			workspaceFolder || vscode.TaskScope.Workspace,
-			localize('buildAndWatchTscLabel', 'watch - {0}', label),
+			vscode.l10n.t("watch - {0}", label),
 			'tsc',
 			new vscode.ShellExecution(command, [...args, '--watch']),
 			'$tsc-watch');
@@ -291,7 +290,7 @@ class TscTaskProvider extends Disposable implements vscode.TaskProvider {
 	}
 
 	private onConfigurationChanged(): void {
-		const type = vscode.workspace.getConfiguration('typescript.tsc').get<AutoDetect>('autoDetect');
+		const type = readUnifiedConfig<AutoDetect | undefined>('tsc.autoDetect', undefined, { fallbackSection: 'typescript' });
 		this.autoDetect = typeof type === 'undefined' ? AutoDetect.on : type;
 	}
 }

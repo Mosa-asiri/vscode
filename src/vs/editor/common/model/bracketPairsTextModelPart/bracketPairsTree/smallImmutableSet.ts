@@ -3,13 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-const emptyArr = new Array<number>();
+const emptyArr: number[] = [];
 
 /**
  * Represents an immutable set that works best for a small number of elements (less than 32).
  * It uses bits to encode element membership efficiently.
 */
 export class SmallImmutableSet<T> {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private static cache = new Array<SmallImmutableSet<any>>(129);
 
 	private static create<T>(items: number, additionalItems: readonly number[]): SmallImmutableSet<T> {
@@ -26,6 +27,7 @@ export class SmallImmutableSet<T> {
 		return new SmallImmutableSet(items, additionalItems);
 	}
 
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private static empty = SmallImmutableSet.create<any>(0, emptyArr);
 	public static getEmpty<T>(): SmallImmutableSet<T> {
 		return this.empty;
@@ -86,7 +88,7 @@ export class SmallImmutableSet<T> {
 		}
 
 		// This can be optimized, but it's not a common case
-		const newItems = new Array<number>();
+		const newItems: number[] = [];
 		for (let i = 0; i < Math.max(this.additionalItems.length, other.additionalItems.length); i++) {
 			const item1 = this.additionalItems[i] || 0;
 			const item2 = other.additionalItems[i] || 0;

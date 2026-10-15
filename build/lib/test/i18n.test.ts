@@ -3,20 +3,21 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import assert = require('assert');
-import i18n = require('../i18n');
+import assert from 'assert';
+import { suite, test } from 'node:test';
+import * as i18n from '../i18n.ts';
 
 suite('XLF Parser Tests', () => {
 	const sampleXlf = '<?xml version="1.0" encoding="utf-8"?><xliff version="1.2" xmlns="urn:oasis:names:tc:xliff:document:1.2"><file original="vs/base/common/keybinding" source-language="en" datatype="plaintext"><body><trans-unit id="key1"><source xml:lang="en">Key #1</source></trans-unit><trans-unit id="key2"><source xml:lang="en">Key #2 &amp;</source></trans-unit></body></file></xliff>';
 	const sampleTranslatedXlf = '<?xml version="1.0" encoding="utf-8"?><xliff version="1.2" xmlns="urn:oasis:names:tc:xliff:document:1.2"><file original="vs/base/common/keybinding" source-language="en" target-language="ru" datatype="plaintext"><body><trans-unit id="key1"><source xml:lang="en">Key #1</source><target>Кнопка #1</target></trans-unit><trans-unit id="key2"><source xml:lang="en">Key #2 &amp;</source><target>Кнопка #2 &amp;</target></trans-unit></body></file></xliff>';
-	const originalFilePath = 'vs/base/common/keybinding';
+	const name = 'vs/base/common/keybinding';
 	const keys = ['key1', 'key2'];
 	const messages = ['Key #1', 'Key #2 &'];
 	const translatedMessages = { key1: 'Кнопка #1', key2: 'Кнопка #2 &' };
 
 	test('Keys & messages to XLF conversion', () => {
 		const xlf = new i18n.XLF('vscode-workbench');
-		xlf.addFile(originalFilePath, keys, messages);
+		xlf.addFile(name, keys, messages);
 		const xlfString = xlf.toString();
 
 		assert.strictEqual(xlfString.replace(/\s{2,}/g, ''), sampleXlf);
@@ -25,13 +26,14 @@ suite('XLF Parser Tests', () => {
 	test('XLF to keys & messages conversion', () => {
 		i18n.XLF.parse(sampleTranslatedXlf).then(function (resolvedFiles) {
 			assert.deepStrictEqual(resolvedFiles[0].messages, translatedMessages);
-			assert.strictEqual(resolvedFiles[0].originalFilePath, originalFilePath);
+			assert.strictEqual(resolvedFiles[0].name, name);
 		});
 	});
 
 	test('JSON file source path to Transifex resource match', () => {
 		const editorProject: string = 'vscode-editor',
-			workbenchProject: string = 'vscode-workbench';
+			workbenchProject: string = 'vscode-workbench',
+			sessionsProject: string = 'vscode-sessions';
 
 		const platform: i18n.Resource = { name: 'vs/platform', project: editorProject },
 			editorContrib = { name: 'vs/editor/contrib', project: editorProject },
@@ -40,7 +42,9 @@ suite('XLF Parser Tests', () => {
 			code = { name: 'vs/code', project: workbenchProject },
 			workbenchParts = { name: 'vs/workbench/contrib/html', project: workbenchProject },
 			workbenchServices = { name: 'vs/workbench/services/textfile', project: workbenchProject },
-			workbench = { name: 'vs/workbench', project: workbenchProject };
+			workbench = { name: 'vs/workbench', project: workbenchProject },
+			sessionsContrib = { name: 'vs/sessions/contrib/chat', project: sessionsProject },
+			sessions = { name: 'vs/sessions', project: sessionsProject };
 
 		assert.deepStrictEqual(i18n.getResource('vs/platform/actions/browser/menusExtensionPoint'), platform);
 		assert.deepStrictEqual(i18n.getResource('vs/editor/contrib/clipboard/browser/clipboard'), editorContrib);
@@ -50,5 +54,7 @@ suite('XLF Parser Tests', () => {
 		assert.deepStrictEqual(i18n.getResource('vs/workbench/contrib/html/browser/webview'), workbenchParts);
 		assert.deepStrictEqual(i18n.getResource('vs/workbench/services/textfile/node/testFileService'), workbenchServices);
 		assert.deepStrictEqual(i18n.getResource('vs/workbench/browser/parts/panel/panelActions'), workbench);
+		assert.deepStrictEqual(i18n.getResource('vs/sessions/contrib/chat/browser/chatWidget'), sessionsContrib);
+		assert.deepStrictEqual(i18n.getResource('vs/sessions/browser/layoutActions'), sessions);
 	});
 });

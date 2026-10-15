@@ -4,39 +4,40 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as fs from 'fs';
-import * as nls from 'vscode-nls';
 import { IPCClient } from './ipc/ipcClient';
 
-const localize = nls.loadMessageBundle();
-
-function fatal(err: any): void {
-	console.error(localize('missOrInvalid', "Missing or invalid credentials."));
+function fatal(err: unknown): void {
+	console.error('Missing or invalid credentials.');
 	console.error(err);
 	process.exit(1);
 }
 
 function main(argv: string[]): void {
-	if (argv.length !== 5) {
-		return fatal('Wrong number of arguments');
-	}
-
 	if (!process.env['VSCODE_GIT_ASKPASS_PIPE']) {
 		return fatal('Missing pipe');
+	}
+
+	if (!process.env['VSCODE_GIT_ASKPASS_TYPE']) {
+		return fatal('Missing type');
+	}
+
+	if (process.env['VSCODE_GIT_ASKPASS_TYPE'] !== 'https' && process.env['VSCODE_GIT_ASKPASS_TYPE'] !== 'ssh') {
+		return fatal(`Invalid type: ${process.env['VSCODE_GIT_ASKPASS_TYPE']}`);
 	}
 
 	if (process.env['VSCODE_GIT_COMMAND'] === 'fetch' && !!process.env['VSCODE_GIT_FETCH_SILENT']) {
 		return fatal('Skip silent fetch commands');
 	}
 
-	const output = process.env['VSCODE_GIT_ASKPASS_PIPE'] as string;
-	const request = argv[2];
-	const host = argv[4].replace(/^["']+|["':]+$/g, '');
-	const ipcClient = new IPCClient('askpass');
+	const output = process.env['VSCODE_GIT_ASKPASS_PIPE'];
+	const askpassType = process.env['VSCODE_GIT_ASKPASS_TYPE'] as 'https' | 'ssh';
 
-	ipcClient.call({ request, host }).then(res => {
-		fs.writeFileSync(output, res + '\n');
-		setTimeout(() => process.exit(0), 0);
-	}).catch(err => fatal(err));
+	const ipcClient = new IPCClient('askpass');
+	ipcClient.call({ askpassType, argv })
+		.then(res => {
+			fs.writeFileSync(output, res + '\n');
+			setTimeout(() => process.exit(0), 0);
+		}).catch(err => fatal(err));
 }
 
 main(process.argv);

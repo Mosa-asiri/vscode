@@ -3,32 +3,74 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { localize } from 'vs/nls';
-import { ITerminalInstance } from 'vs/workbench/contrib/terminal/browser/terminal';
-import { TerminalCapability } from 'vs/platform/terminal/common/capabilities/capabilities';
-import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
-import { TerminalSettingId } from 'vs/platform/terminal/common/terminal';
+import type { IHoverAction } from '../../../../base/browser/ui/hover/hover.js';
+import { asArray } from '../../../../base/common/arrays.js';
+import { MarkdownString } from '../../../../base/common/htmlContent.js';
+import { basename } from '../../../../base/common/path.js';
+import { localize } from '../../../../nls.js';
+import { StorageScope, StorageTarget, type IStorageService } from '../../../../platform/storage/common/storage.js';
+import type { ITerminalStatusHoverAction } from '../common/terminal.js';
+import { TerminalStorageKeys } from '../common/terminalStorageKeys.js';
+import { ITerminalInstance } from './terminal.js';
 
-export function getShellIntegrationTooltip(instance: ITerminalInstance, markdown: boolean, configurationService: IConfigurationService): string {
-	if (!configurationService.getValue(TerminalSettingId.ShellIntegrationEnabled) || instance.disableShellIntegrationReporting) {
-		return '';
-	}
-	const shellIntegrationCapabilities: TerminalCapability[] = [];
-	if (instance.capabilities.has(TerminalCapability.CommandDetection)) {
-		shellIntegrationCapabilities.push(TerminalCapability.CommandDetection);
-	}
-	if (instance.capabilities.has(TerminalCapability.CwdDetection)) {
-		shellIntegrationCapabilities.push(TerminalCapability.CwdDetection);
-	}
-	let shellIntegrationString = '';
-	if (shellIntegrationCapabilities.length > 0) {
-		shellIntegrationString += `${markdown ? '\n\n---\n\n' : '\n\n'} ${localize('shellIntegration.enabled', "Shell integration activated")}`;
-	} else {
-		if (instance.shellLaunchConfig.ignoreShellIntegration) {
-			shellIntegrationString += `${markdown ? '\n\n---\n\n' : '\n\n'} ${localize('launchFailed.exitCodeOnlyShellIntegration', "The terminal process failed to launch. Disabling shell integration with terminal.integrated.shellIntegration.enabled might help.")}`;
+export function getInstanceHoverInfo(instance: ITerminalInstance, storageService: IStorageService): { content: MarkdownString; actions: IHoverAction[] } {
+	const showDetailed = parseInt(storageService.get(TerminalStorageKeys.TabsShowDetailed, StorageScope.APPLICATION) ?? '0');
+	let statusString = '';
+	const statuses = instance.statusList.statuses;
+	const actions: ITerminalStatusHoverAction[] = [];
+	for (const status of statuses) {
+		if (showDetailed) {
+			if (status.detailedTooltip ?? status.tooltip) {
+				statusString += `\n\n---\n\n${status.icon ? `$(${status.icon?.id}) ` : ''}` + (status.detailedTooltip ?? status.tooltip ?? '');
+			}
 		} else {
-			shellIntegrationString += `${markdown ? '\n\n---\n\n' : '\n\n'} ${localize('shellIntegration.activationFailed', "Shell integration failed to activate")}`;
+			if (status.tooltip) {
+				statusString += `\n\n---\n\n${status.icon ? `$(${status.icon?.id}) ` : ''}` + (status.tooltip ?? '');
+			}
+		}
+		if (status.hoverActions) {
+			actions.push(...status.hoverActions);
 		}
 	}
-	return shellIntegrationString;
+	actions.push({
+		commandId: 'toggleDetailedInfo',
+		label: showDetailed ? localize('hideDetails', 'Hide Details') : localize('showDetails', 'Show Details'),
+		run() {
+			storageService.store(TerminalStorageKeys.TabsShowDetailed, (showDetailed + 1) % 2, StorageScope.APPLICATION, StorageTarget.USER);
+		},
+	});
+
+	const shellProcessString = getShellProcessTooltip(instance, !!showDetailed);
+	const content = new MarkdownString(instance.title + shellProcessString + statusString, { supportThemeIcons: true });
+
+	return { content, actions };
 }
+
+export function getShellProcessTooltip(instance: ITerminalInstance, showDetailed: boolean): string {
+	const lines: string[] = [];
+
+	if (instance.processId && instance.processId > 0) {
+		lines.push(localize({ key: 'shellProcessTooltip.processId', comment: ['The first arg is "PID" which shouldn\'t be translated'] }, "Process ID ({0}): {1}", 'PID', instance.processId) + '\n');
+	}
+
+	if (instance.shellLaunchConfig.executable) {
+		let commandLine = '';
+		if (!showDetailed && instance.shellLaunchConfig.executable.length > 32) {
+			const base = basename(instance.shellLaunchConfig.executable);
+			const sepIndex = instance.shellLaunchConfig.executable.length - base.length - 1;
+			const sep = instance.shellLaunchConfig.executable.substring(sepIndex, sepIndex + 1);
+			commandLine += `…${sep}${base}`;
+		} else {
+			commandLine += instance.shellLaunchConfig.executable;
+		}
+		const args = asArray(instance.injectedArgs || instance.shellLaunchConfig.args || []).map(x => x.match(/\s/) ? `'${x}'` : x).join(' ');
+		if (args) {
+			commandLine += ` ${args}`;
+		}
+
+		lines.push(localize('shellProcessTooltip.commandLine', 'Command line: {0}', commandLine));
+	}
+
+	return lines.length ? `\n\n---\n\n${lines.join('\n')}` : '';
+}
+

@@ -3,26 +3,26 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { URI, UriComponents } from 'vs/base/common/uri';
-import { ExtensionIdentifier } from 'vs/platform/extensions/common/extensions';
-import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
-import { IEditorSerializer } from 'vs/workbench/common/editor';
-import { WebviewContentOptions, WebviewExtensionDescription, WebviewOptions } from 'vs/workbench/contrib/webview/browser/webview';
-import { WebviewIcons } from 'vs/workbench/contrib/webviewPanel/browser/webviewIconManager';
-import { WebviewInput } from './webviewEditorInput';
-import { IWebviewWorkbenchService } from './webviewWorkbenchService';
+import { URI, UriComponents } from '../../../../base/common/uri.js';
+import { ExtensionIdentifier } from '../../../../platform/extensions/common/extensions.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IEditorSerializer } from '../../../common/editor.js';
+import { WebviewContentOptions, WebviewExtensionDescription, WebviewOptions } from '../../webview/browser/webview.js';
+import { WebviewIconPath, WebviewInput } from './webviewEditorInput.js';
+import { IWebviewWorkbenchService } from './webviewWorkbenchService.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 
 export type SerializedWebviewOptions = WebviewOptions & WebviewContentOptions;
 
-interface SerializedIconPath {
+type SerializedIconPath = ThemeIcon | {
 	light: string | UriComponents;
 	dark: string | UriComponents;
-}
+};
 
 export interface SerializedWebview {
-	readonly id: string;
 	readonly origin: string | undefined;
 	readonly viewType: string;
+	readonly providedId: string | undefined;
 	readonly title: string;
 	readonly options: SerializedWebviewOptions;
 	readonly extensionLocation: UriComponents | undefined;
@@ -33,15 +33,15 @@ export interface SerializedWebview {
 }
 
 export interface DeserializedWebview {
-	readonly id: string;
 	readonly origin: string | undefined;
 	readonly viewType: string;
+	readonly providedId: string | undefined;
 	readonly title: string;
 	readonly webviewOptions: WebviewOptions;
 	readonly contentOptions: WebviewContentOptions;
 	readonly extension: WebviewExtensionDescription | undefined;
 	readonly state: any;
-	readonly iconPath: WebviewIcons | undefined;
+	readonly iconPath: WebviewIconPath | undefined;
 	readonly group?: number;
 }
 
@@ -58,7 +58,7 @@ export class WebviewEditorInputSerializer implements IEditorSerializer {
 	}
 
 	public serialize(input: WebviewInput): string | undefined {
-		if (!this._webviewWorkbenchService.shouldPersist(input)) {
+		if (!this.canSerialize(input)) {
 			return undefined;
 		}
 
@@ -75,10 +75,11 @@ export class WebviewEditorInputSerializer implements IEditorSerializer {
 		serializedEditorInput: string
 	): WebviewInput {
 		const data = this.fromJson(JSON.parse(serializedEditorInput));
-		return this._webviewWorkbenchService.reviveWebview({
+		return this._webviewWorkbenchService.openRevivedWebview({
 			webviewInitInfo: {
-				id: data.id,
+				providedViewType: data.providedId,
 				origin: data.origin,
+				title: data.title,
 				options: data.webviewOptions,
 				contentOptions: data.contentOptions,
 				extension: data.extension,
@@ -95,7 +96,7 @@ export class WebviewEditorInputSerializer implements IEditorSerializer {
 		return {
 			...data,
 			extension: reviveWebviewExtensionDescription(data.extensionId, data.extensionLocation),
-			iconPath: reviveIconPath(data.iconPath),
+			iconPath: reviveWebviewIconPath(data.iconPath),
 			state: reviveState(data.state),
 			webviewOptions: restoreWebviewOptions(data.options),
 			contentOptions: restoreWebviewContentOptions(data.options),
@@ -104,15 +105,19 @@ export class WebviewEditorInputSerializer implements IEditorSerializer {
 
 	protected toJson(input: WebviewInput): SerializedWebview {
 		return {
-			id: input.id,
 			origin: input.webview.origin,
 			viewType: input.viewType,
+			providedId: input.providerId,
 			title: input.getName(),
 			options: { ...input.webview.options, ...input.webview.contentOptions },
-			extensionLocation: input.extension ? input.extension.location : undefined,
-			extensionId: input.extension && input.extension.id ? input.extension.id.value : undefined,
+			extensionLocation: input.extension?.location,
+			extensionId: input.extension?.id.value,
 			state: input.webview.state,
-			iconPath: input.iconPath ? { light: input.iconPath.light, dark: input.iconPath.dark, } : undefined,
+			iconPath: input.iconPath
+				? ThemeIcon.isThemeIcon(input.iconPath)
+					? input.iconPath
+					: { light: input.iconPath.light, dark: input.iconPath.dark, }
+				: undefined,
 			group: input.group
 		};
 	}
@@ -137,9 +142,13 @@ export function reviveWebviewExtensionDescription(
 	};
 }
 
-function reviveIconPath(data: SerializedIconPath | undefined) {
+export function reviveWebviewIconPath(data: SerializedIconPath | undefined): WebviewIconPath | undefined {
 	if (!data) {
 		return undefined;
+	}
+
+	if (ThemeIcon.isThemeIcon(data)) {
+		return data;
 	}
 
 	const light = reviveUri(data.light);

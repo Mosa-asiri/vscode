@@ -5,30 +5,31 @@
 import { getElementsForSourceLine } from './scroll-sync';
 
 export class ActiveLineMarker {
-	private _current: any;
+	#current: HTMLElement | undefined;
 
 	onDidChangeTextEditorSelection(line: number, documentVersion: number) {
 		const { previous } = getElementsForSourceLine(line, documentVersion);
-		this._update(previous && previous.element);
+		this.#update(previous && (previous.codeElement || previous.element));
 	}
 
-	_update(before: HTMLElement | undefined) {
-		this._unmarkActiveElement(this._current);
-		this._markActiveElement(before);
-		this._current = before;
+	#update(before: HTMLElement | undefined) {
+		this.#unmarkActiveElement(this.#current);
+		this.#markActiveElement(before);
+		this.#current = before;
 	}
 
-	_unmarkActiveElement(element: HTMLElement | undefined) {
+	#unmarkActiveElement(element: HTMLElement | undefined) {
 		if (!element) {
 			return;
 		}
-		element.className = element.className.replace(/\bcode-active-line\b/g, '');
+		element.classList.toggle('code-active-line', false);
 	}
 
-	_markActiveElement(element: HTMLElement | undefined) {
+	#markActiveElement(element: HTMLElement | undefined) {
 		if (!element) {
 			return;
 		}
-		element.className += ' code-active-line';
+
+		element.classList.toggle('code-active-line', true);
 	}
 }

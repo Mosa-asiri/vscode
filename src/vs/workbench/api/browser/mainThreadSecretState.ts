@@ -3,93 +3,99 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from 'vs/base/common/lifecycle';
-import { extHostNamedCustomer, IExtHostContext } from 'vs/workbench/services/extensions/common/extHostCustomers';
-import { ICredentialsService } from 'vs/platform/credentials/common/credentials';
-import { IEncryptionService } from 'vs/workbench/services/encryption/common/encryptionService';
-import { ExtHostContext, ExtHostSecretStateShape, MainContext, MainThreadSecretStateShape } from '../common/extHost.protocol';
-import { ILogService } from 'vs/platform/log/common/log';
+import { Disposable } from '../../../base/common/lifecycle.js';
+import { extHostNamedCustomer, IExtHostContext } from '../../services/extensions/common/extHostCustomers.js';
+import { ExtHostContext, ExtHostSecretStateShape, MainContext, MainThreadSecretStateShape } from '../common/extHost.protocol.js';
+import { ILogService } from '../../../platform/log/common/log.js';
+import { SequencerByKey } from '../../../base/common/async.js';
+import { ISecretStorageService } from '../../../platform/secrets/common/secrets.js';
+import { IBrowserWorkbenchEnvironmentService } from '../../services/environment/browser/environmentService.js';
 
 @extHostNamedCustomer(MainContext.MainThreadSecretState)
 export class MainThreadSecretState extends Disposable implements MainThreadSecretStateShape {
 	private readonly _proxy: ExtHostSecretStateShape;
 
-	private secretStoragePrefix = this.credentialsService.getSecretStoragePrefix();
+	private readonly _sequencer = new SequencerByKey<string>();
 
 	constructor(
 		extHostContext: IExtHostContext,
-		@ICredentialsService private readonly credentialsService: ICredentialsService,
-		@IEncryptionService private readonly encryptionService: IEncryptionService,
+		@ISecretStorageService private readonly secretStorageService: ISecretStorageService,
 		@ILogService private readonly logService: ILogService,
+		@IBrowserWorkbenchEnvironmentService environmentService: IBrowserWorkbenchEnvironmentService
 	) {
 		super();
+
 		this._proxy = extHostContext.getProxy(ExtHostContext.ExtHostSecretState);
 
-		this._register(this.credentialsService.onDidChangePassword(async e => {
-			const extensionId = e.service.substring((await this.secretStoragePrefix).length);
-			this._proxy.$onDidChangePassword({ extensionId, key: e.account });
+		this._register(this.secretStorageService.onDidChangeSecret((e: string) => {
+			const parsedKey = this.parseKey(e);
+			if (parsedKey) {
+				this._proxy.$onDidChangePassword(parsedKey);
+			}
 		}));
 	}
 
-	private async getFullKey(extensionId: string): Promise<string> {
-		return `${await this.secretStoragePrefix}${extensionId}`;
+	$getPassword(extensionId: string, key: string): Promise<string | undefined> {
+		this.logService.trace(`[mainThreadSecretState] Getting password for ${extensionId} extension: `, key);
+		return this._sequencer.queue(extensionId, () => this.doGetPassword(extensionId, key));
 	}
 
-	async $getPassword(extensionId: string, key: string): Promise<string | undefined> {
-		const fullKey = await this.getFullKey(extensionId);
-		const password = await this.credentialsService.getPassword(fullKey, key);
-		if (!password) {
+	private async doGetPassword(extensionId: string, key: string): Promise<string | undefined> {
+		const fullKey = this.getKey(extensionId, key);
+		const password = await this.secretStorageService.get(fullKey);
+		this.logService.trace(`[mainThreadSecretState] ${password ? 'P' : 'No p'}assword found for: `, extensionId, key);
+		return password;
+	}
+
+	$setPassword(extensionId: string, key: string, value: string): Promise<void> {
+		this.logService.trace(`[mainThreadSecretState] Setting password for ${extensionId} extension: `, key);
+		return this._sequencer.queue(extensionId, () => this.doSetPassword(extensionId, key, value));
+	}
+
+	private async doSetPassword(extensionId: string, key: string, value: string): Promise<void> {
+		const fullKey = this.getKey(extensionId, key);
+		await this.secretStorageService.set(fullKey, value);
+		this.logService.trace('[mainThreadSecretState] Password set for: ', extensionId, key);
+	}
+
+	$deletePassword(extensionId: string, key: string): Promise<void> {
+		this.logService.trace(`[mainThreadSecretState] Deleting password for ${extensionId} extension: `, key);
+		return this._sequencer.queue(extensionId, () => this.doDeletePassword(extensionId, key));
+	}
+
+	private async doDeletePassword(extensionId: string, key: string): Promise<void> {
+		const fullKey = this.getKey(extensionId, key);
+		await this.secretStorageService.delete(fullKey);
+		this.logService.trace('[mainThreadSecretState] Password deleted for: ', extensionId, key);
+	}
+
+	$getKeys(extensionId: string): Promise<string[]> {
+		this.logService.trace(`[mainThreadSecretState] Getting keys for ${extensionId} extension: `);
+		return this._sequencer.queue(extensionId, () => this.doGetKeys(extensionId));
+	}
+
+	private async doGetKeys(extensionId: string): Promise<string[]> {
+		if (!this.secretStorageService.keys) {
+			throw new Error('Secret storage service does not support keys() method');
+		}
+		const allKeys = await this.secretStorageService.keys();
+		const keys = allKeys
+			.map(key => this.parseKey(key))
+			.filter((parsedKey): parsedKey is { extensionId: string; key: string } => parsedKey !== undefined && parsedKey.extensionId === extensionId)
+			.map(({ key }) => key); // Return only my keys
+		this.logService.trace(`[mainThreadSecretState] Got ${keys.length}key(s) for: `, extensionId);
+		return keys;
+	}
+
+	private getKey(extensionId: string, key: string): string {
+		return JSON.stringify({ extensionId, key });
+	}
+
+	private parseKey(key: string): { extensionId: string; key: string } | undefined {
+		try {
+			return JSON.parse(key);
+		} catch {
 			return undefined;
-		}
-
-		let decrypted: string | null;
-		try {
-			decrypted = await this.encryptionService.decrypt(password);
-		} catch (e) {
-			this.logService.error(e);
-
-			// If we are on a platform that newly started encrypting secrets before storing them,
-			// then passwords previously stored were stored un-encrypted (NOTE: but still being stored in a secure keyring).
-			// When we try to decrypt a password that wasn't encrypted previously, the encryption service will throw.
-			// To recover gracefully, we first try to encrypt & store the password (essentially migrating the secret to the new format)
-			// and then we try to read it and decrypt again.
-			const encryptedForSet = await this.encryptionService.encrypt(password);
-			await this.credentialsService.setPassword(fullKey, key, encryptedForSet);
-			const passwordEncrypted = await this.credentialsService.getPassword(fullKey, key);
-			decrypted = passwordEncrypted && await this.encryptionService.decrypt(passwordEncrypted);
-		}
-
-		if (decrypted) {
-			try {
-				const value = JSON.parse(decrypted);
-				if (value.extensionId === extensionId) {
-					return value.content;
-				}
-			} catch (e) {
-				this.logService.error(e);
-				throw new Error('Cannot get password');
-			}
-		}
-
-		return undefined;
-	}
-
-	async $setPassword(extensionId: string, key: string, value: string): Promise<void> {
-		const fullKey = await this.getFullKey(extensionId);
-		const toEncrypt = JSON.stringify({
-			extensionId,
-			content: value
-		});
-		const encrypted = await this.encryptionService.encrypt(toEncrypt);
-		return await this.credentialsService.setPassword(fullKey, key, encrypted);
-	}
-
-	async $deletePassword(extensionId: string, key: string): Promise<void> {
-		try {
-			const fullKey = await this.getFullKey(extensionId);
-			await this.credentialsService.deletePassword(fullKey, key);
-		} catch (_) {
-			throw new Error('Cannot delete password');
 		}
 	}
 }

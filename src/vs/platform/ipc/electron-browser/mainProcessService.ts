@@ -3,27 +3,33 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { IChannel, IServerChannel, StaticRouter } from 'vs/base/parts/ipc/common/ipc';
-import { Server as MessagePortServer } from 'vs/base/parts/ipc/electron-browser/ipc.mp';
-import { IMainProcessService } from 'vs/platform/ipc/electron-sandbox/services';
+import { Disposable } from '../../../base/common/lifecycle.js';
+import { IChannel, IServerChannel } from '../../../base/parts/ipc/common/ipc.js';
+import { Client as IPCElectronClient } from '../../../base/parts/ipc/electron-browser/ipc.electron.js';
+import { IMainProcessService } from '../common/mainProcessService.js';
 
 /**
- * An implementation of `IMainProcessService` that leverages MessagePorts.
+ * An implementation of `IMainProcessService` that leverages Electron's IPC.
  */
-export class MessagePortMainProcessService implements IMainProcessService {
+export class ElectronIPCMainProcessService extends Disposable implements IMainProcessService {
 
 	declare readonly _serviceBrand: undefined;
 
+	private mainProcessConnection: IPCElectronClient;
+
 	constructor(
-		private server: MessagePortServer,
-		private router: StaticRouter
-	) { }
+		windowId: number
+	) {
+		super();
+
+		this.mainProcessConnection = this._register(new IPCElectronClient(`window:${windowId}`));
+	}
 
 	getChannel(channelName: string): IChannel {
-		return this.server.getChannel(channelName, this.router);
+		return this.mainProcessConnection.getChannel(channelName);
 	}
 
 	registerChannel(channelName: string, channel: IServerChannel<string>): void {
-		this.server.registerChannel(channelName, channel);
+		this.mainProcessConnection.registerChannel(channelName, channel);
 	}
 }

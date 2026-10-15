@@ -4,29 +4,29 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { exec } from 'child_process';
-import { FileAccess } from 'vs/base/common/network';
-import { ProcessItem } from 'vs/base/common/processes';
+import { totalmem } from 'os';
+import { FileAccess } from '../common/network.js';
+import { ProcessItem } from '../common/processes.js';
+import { isWindows } from '../common/platform.js';
+
+export const JS_FILENAME_PATTERN = /[a-zA-Z-]+\.js\b/g;
 
 export function listProcesses(rootPid: number): Promise<ProcessItem> {
-
 	return new Promise((resolve, reject) => {
-
 		let rootItem: ProcessItem | undefined;
 		const map = new Map<number, ProcessItem>();
-
+		const totalMemory = totalmem();
 
 		function addToTree(pid: number, ppid: number, cmd: string, load: number, mem: number) {
-
 			const parent = map.get(ppid);
 			if (pid === rootPid || parent) {
-
 				const item: ProcessItem = {
 					name: findName(cmd),
 					cmd,
 					pid,
 					ppid,
 					load,
-					mem
+					mem: isWindows ? mem : (totalMemory * (mem / 100))
 				};
 				map.set(pid, item);
 
@@ -47,15 +47,9 @@ export function listProcesses(rootPid: number): Promise<ProcessItem> {
 		}
 
 		function findName(cmd: string): string {
-
-			const SHARED_PROCESS_HINT = /--vscode-window-kind=shared-process/;
-			const ISSUE_REPORTER_HINT = /--vscode-window-kind=issue-reporter/;
-			const PROCESS_EXPLORER_HINT = /--vscode-window-kind=process-explorer/;
-			const UTILITY_NETWORK_HINT = /--utility-sub-type=network/;
-			const UTILITY_EXTENSION_HOST_HINT = /--utility-sub-type=node.mojom.NodeService/;
-			const WINDOWS_CRASH_REPORTER = /--crashes-directory/;
-			const WINDOWS_PTY = /\\pipe\\winpty-control/;
-			const WINDOWS_CONSOLE_HOST = /conhost\.exe/;
+			const UTILITY_NETWORK_HINT = /--utility-sub-type=network/i;
+			const WINDOWS_CRASH_REPORTER = /--crashes-directory/i;
+			const CONPTY = /conhost\.exe.+--headless/i;
 			const TYPE = /--type=([a-zA-Z-]+)/;
 
 			// find windows crash reporter
@@ -63,80 +57,61 @@ export function listProcesses(rootPid: number): Promise<ProcessItem> {
 				return 'electron-crash-reporter';
 			}
 
-			// find windows pty process
-			if (WINDOWS_PTY.exec(cmd)) {
-				return 'winpty-process';
-			}
-
-			//find windows console host process
-			if (WINDOWS_CONSOLE_HOST.exec(cmd)) {
-				return 'console-window-host (Windows internal process)';
+			// find conpty process
+			if (CONPTY.exec(cmd)) {
+				return 'conpty-agent';
 			}
 
 			// find "--type=xxxx"
 			let matches = TYPE.exec(cmd);
 			if (matches && matches.length === 2) {
 				if (matches[1] === 'renderer') {
-					if (SHARED_PROCESS_HINT.exec(cmd)) {
-						return 'shared-process';
-					}
-
-					if (ISSUE_REPORTER_HINT.exec(cmd)) {
-						return 'issue-reporter';
-					}
-
-					if (PROCESS_EXPLORER_HINT.exec(cmd)) {
-						return 'process-explorer';
-					}
-
 					return `window`;
 				} else if (matches[1] === 'utility') {
 					if (UTILITY_NETWORK_HINT.exec(cmd)) {
 						return 'utility-network-service';
 					}
 
-					if (UTILITY_EXTENSION_HOST_HINT.exec(cmd)) {
-						return 'extension-host';
-					}
+					return 'utility-process';
+				} else if (matches[1] === 'extensionHost') {
+					return 'extension-host'; // normalize remote extension host type
 				}
 				return matches[1];
 			}
 
-			// find all xxxx.js
-			const JS = /[a-zA-Z-]+\.js/g;
-			let result = '';
-			do {
-				matches = JS.exec(cmd);
-				if (matches) {
-					result += matches + ' ';
-				}
-			} while (matches);
+			if (cmd.indexOf('node ') < 0 && cmd.indexOf('node.exe') < 0) {
+				let result = ''; // find all xyz.js
+				do {
+					matches = JS_FILENAME_PATTERN.exec(cmd);
+					if (matches) {
+						result += matches + ' ';
+					}
+				} while (matches);
 
-			if (result) {
-				if (cmd.indexOf('node ') < 0 && cmd.indexOf('node.exe') < 0) {
-					return `electron_node ${result}`;
+				if (result) {
+					return `electron-nodejs (${result.trim()})`;
 				}
 			}
+
 			return cmd;
 		}
 
 		if (process.platform === 'win32') {
-
 			const cleanUNCPrefix = (value: string): string => {
 				if (value.indexOf('\\\\?\\') === 0) {
-					return value.substr(4);
+					return value.substring(4);
 				} else if (value.indexOf('\\??\\') === 0) {
-					return value.substr(4);
+					return value.substring(4);
 				} else if (value.indexOf('"\\\\?\\') === 0) {
-					return '"' + value.substr(5);
+					return '"' + value.substring(5);
 				} else if (value.indexOf('"\\??\\') === 0) {
-					return '"' + value.substr(5);
+					return '"' + value.substring(5);
 				} else {
 					return value;
 				}
 			};
 
-			(import('windows-process-tree')).then(windowsProcessTree => {
+			(import('@vscode/windows-process-tree')).then(windowsProcessTree => {
 				windowsProcessTree.getProcessList(rootPid, (processList) => {
 					if (!processList) {
 						reject(new Error(`Root process ${rootPid} not found`));
@@ -180,8 +155,12 @@ export function listProcesses(rootPid: number): Promise<ProcessItem> {
 					});
 				}, windowsProcessTree.ProcessDataFlag.CommandLine | windowsProcessTree.ProcessDataFlag.Memory);
 			});
-		} else {	// OS X & Linux
+		}
+
+		// OS X & Linux
+		else {
 			function calculateLinuxCpuUsage() {
+
 				// Flatten rootItem to get a list of all VSCode processes
 				let processes = [rootItem];
 				const pids: number[] = [];
@@ -198,7 +177,7 @@ export function listProcesses(rootPid: number): Promise<ProcessItem> {
 				// The cpu usage value reported on Linux is the average over the process lifetime,
 				// recalculate the usage over a one second interval
 				// JSON.stringify is needed to escape spaces, https://github.com/nodejs/node/issues/6803
-				let cmd = JSON.stringify(FileAccess.asFileUri('vs/base/node/cpuUsage.sh', require).fsPath);
+				let cmd = JSON.stringify(FileAccess.asFileUri('vs/base/node/cpuUsage.sh').fsPath);
 				cmd += ' ' + pids.join(' ');
 
 				exec(cmd, {}, (err, stdout, stderr) => {
@@ -226,7 +205,7 @@ export function listProcesses(rootPid: number): Promise<ProcessItem> {
 					if (process.platform !== 'linux') {
 						reject(err || new Error(stderr.toString()));
 					} else {
-						const cmd = JSON.stringify(FileAccess.asFileUri('vs/base/node/ps.sh', require).fsPath);
+						const cmd = JSON.stringify(FileAccess.asFileUri('vs/base/node/ps.sh').fsPath);
 						exec(cmd, {}, (err, stdout, stderr) => {
 							if (err || stderr) {
 								reject(err || new Error(stderr.toString()));

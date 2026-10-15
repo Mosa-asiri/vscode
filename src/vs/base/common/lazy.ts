@@ -3,23 +3,15 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-/**
- * A value that is resolved synchronously when it is first needed.
- */
-export interface Lazy<T> {
-
-	hasValue(): boolean;
-
-
-	getValue(): T;
-
-
-	map<R>(f: (x: T) => R): Lazy<R>;
+enum LazyValueState {
+	Uninitialized,
+	Running,
+	Completed,
 }
 
 export class Lazy<T> {
 
-	private _didRun: boolean = false;
+	private _state = LazyValueState.Uninitialized;
 	private _value?: T;
 	private _error: Error | undefined;
 
@@ -30,7 +22,7 @@ export class Lazy<T> {
 	/**
 	 * True if the lazy value has been resolved.
 	 */
-	hasValue() { return this._didRun; }
+	get hasValue(): boolean { return this._state === LazyValueState.Completed; }
 
 	/**
 	 * Get the wrapped value.
@@ -38,16 +30,20 @@ export class Lazy<T> {
 	 * This will force evaluation of the lazy value if it has not been resolved yet. Lazy values are only
 	 * resolved once. `getValue` will re-throw exceptions that are hit while resolving the value
 	 */
-	getValue(): T {
-		if (!this._didRun) {
+	get value(): T {
+		if (this._state === LazyValueState.Uninitialized) {
+			this._state = LazyValueState.Running;
 			try {
 				this._value = this.executor();
 			} catch (err) {
 				this._error = err;
 			} finally {
-				this._didRun = true;
+				this._state = LazyValueState.Completed;
 			}
+		} else if (this._state === LazyValueState.Running) {
+			throw new Error('Cannot read the value of a lazy that is being initialized');
 		}
+
 		if (this._error) {
 			throw this._error;
 		}
@@ -58,13 +54,4 @@ export class Lazy<T> {
 	 * Get the wrapped value without forcing evaluation.
 	 */
 	get rawValue(): T | undefined { return this._value; }
-
-	/**
-	 * Create a new lazy value that is the result of applying `f` to the wrapped value.
-	 *
-	 * This does not force the evaluation of the current lazy value.
-	 */
-	map<R>(f: (x: T) => R): Lazy<R> {
-		return new Lazy<R>(() => f(this.getValue()));
-	}
 }

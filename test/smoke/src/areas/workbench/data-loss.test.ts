@@ -7,8 +7,11 @@ import { join } from 'path';
 import { Application, ApplicationOptions, Logger, Quality } from '../../../../automation';
 import { createApp, timeout, installDiagnosticsHandler, installAppAfterHandler, getRandomUserDataDir, suiteLogsPath, suiteCrashPath } from '../../utils';
 
-export function setup(ensureStableCode: () => string | undefined, logger: Logger) {
-	describe('Data Loss (insiders -> insiders)', () => {
+export function setup(ensureStableCode: () => { stableCodePath: string | undefined; stableCodeVersion: { major: number; minor: number; patch: number } | undefined }, logger: Logger) {
+	describe('Data Loss (insiders -> insiders)', function () {
+
+		// Double the timeout since these tests involve 2 startups
+		this.timeout(4 * 60 * 1000);
 
 		let app: Application | undefined = undefined;
 
@@ -23,6 +26,7 @@ export function setup(ensureStableCode: () => string | undefined, logger: Logger
 				crashesPath: suiteCrashPath(this.defaultOptions, 'test_verifies_opened_editors_are_restored')
 			});
 			await app.start();
+
 
 			// Open 3 editors
 			await app.workbench.quickaccess.openFile(join(app.workspacePathOrFolder, 'bin', 'www'));
@@ -72,18 +76,18 @@ export function setup(ensureStableCode: () => string | undefined, logger: Logger
 		});
 
 		it('verifies that "hot exit" works for dirty files (without delay)', function () {
-			return testHotExit.call(this, 'test_verifies_that_hot_exit_works_for_dirty_files_without_delay', undefined);
+			return testHotExit.call(this, 'test_verifies_that_hot_exit_works_for_dirty_files_without_delay', undefined, undefined);
 		});
 
 		it('verifies that "hot exit" works for dirty files (with delay)', function () {
-			return testHotExit.call(this, 'test_verifies_that_hot_exit_works_for_dirty_files_with_delay', 2000);
+			return testHotExit.call(this, 'test_verifies_that_hot_exit_works_for_dirty_files_with_delay', 2000, undefined);
 		});
 
 		it('verifies that auto save triggers on shutdown', function () {
 			return testHotExit.call(this, 'test_verifies_that_auto_save_triggers_on_shutdown', undefined, true);
 		});
 
-		async function testHotExit(title: string, restartDelay: number | undefined, autoSave: boolean | undefined) {
+		async function testHotExit(this: import('mocha').Context, title: string, restartDelay: number | undefined, autoSave: boolean | undefined) {
 			app = createApp({
 				...this.defaultOptions,
 				logsPath: suiteLogsPath(this.defaultOptions, title),
@@ -130,7 +134,10 @@ export function setup(ensureStableCode: () => string | undefined, logger: Logger
 		}
 	});
 
-	describe('Data Loss (stable -> insiders)', () => {
+	describe('Data Loss (stable -> insiders)', function () {
+
+		// Double the timeout since these tests involve 2 startups
+		this.timeout(4 * 60 * 1000);
 
 		let insidersApp: Application | undefined = undefined;
 		let stableApp: Application | undefined = undefined;
@@ -140,7 +147,7 @@ export function setup(ensureStableCode: () => string | undefined, logger: Logger
 		installAppAfterHandler(() => insidersApp ?? stableApp, async () => stableApp?.stop());
 
 		it('verifies opened editors are restored', async function () {
-			const stableCodePath = ensureStableCode();
+			const { stableCodePath, stableCodeVersion } = ensureStableCode();
 			if (!stableCodePath) {
 				this.skip();
 			}
@@ -154,7 +161,7 @@ export function setup(ensureStableCode: () => string | undefined, logger: Logger
 				this.retries(2);
 			}
 
-			const userDataDir = getRandomUserDataDir(this.defaultOptions);
+			const userDataDir = getRandomUserDataDir(this.defaultOptions.userDataDir);
 			const logsPath = suiteLogsPath(this.defaultOptions, 'test_verifies_opened_editors_are_restored_from_stable');
 			const crashesPath = suiteCrashPath(this.defaultOptions, 'test_verifies_opened_editors_are_restored_from_stable');
 
@@ -164,6 +171,7 @@ export function setup(ensureStableCode: () => string | undefined, logger: Logger
 			stableOptions.quality = Quality.Stable;
 			stableOptions.logsPath = logsPath;
 			stableOptions.crashesPath = crashesPath;
+			stableOptions.version = stableCodeVersion ?? { major: 0, minor: 0, patch: 0 };
 
 			stableApp = new Application(stableOptions);
 			await stableApp.start();
@@ -203,13 +211,13 @@ export function setup(ensureStableCode: () => string | undefined, logger: Logger
 			return testHotExit.call(this, `test_verifies_that_hot_exit_works_for_dirty_files_with_delay_from_stable`, 2000);
 		});
 
-		async function testHotExit(title: string, restartDelay: number | undefined) {
-			const stableCodePath = ensureStableCode();
+		async function testHotExit(this: import('mocha').Context, title: string, restartDelay: number | undefined) {
+			const { stableCodePath, stableCodeVersion } = ensureStableCode();
 			if (!stableCodePath) {
 				this.skip();
 			}
 
-			const userDataDir = getRandomUserDataDir(this.defaultOptions);
+			const userDataDir = getRandomUserDataDir(this.defaultOptions.userDataDir);
 			const logsPath = suiteLogsPath(this.defaultOptions, title);
 			const crashesPath = suiteCrashPath(this.defaultOptions, title);
 
@@ -219,6 +227,7 @@ export function setup(ensureStableCode: () => string | undefined, logger: Logger
 			stableOptions.quality = Quality.Stable;
 			stableOptions.logsPath = logsPath;
 			stableOptions.crashesPath = crashesPath;
+			stableOptions.version = stableCodeVersion ?? { major: 0, minor: 0, patch: 0 };
 
 			stableApp = new Application(stableOptions);
 			await stableApp.start();

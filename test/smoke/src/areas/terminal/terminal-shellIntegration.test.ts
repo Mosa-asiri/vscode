@@ -6,8 +6,8 @@
 import { Application, Terminal, SettingsEditor, TerminalCommandIdWithValue, TerminalCommandId } from '../../../../automation';
 import { setTerminalTestSettings } from './terminal-helpers';
 
-export function setup() {
-	describe('Terminal Shell Integration', () => {
+export function setup(options?: { skipSuite: boolean }) {
+	(options?.skipSuite ? describe.skip : describe)('Terminal Shell Integration', () => {
 		let terminal: Terminal;
 		let settingsEditor: SettingsEditor;
 		let app: Application;
@@ -49,18 +49,6 @@ export function setup() {
 						await createShellIntegrationProfile();
 						await terminal.runCommandInTerminal(`false`);
 						await terminal.assertCommandDecorations({ placeholder: 1, success: 0, error: 1 });
-					});
-				});
-				describe('Custom configuration', function () {
-					it('Should update and show custom icons', async () => {
-						await createShellIntegrationProfile();
-						await terminal.assertCommandDecorations({ placeholder: 1, success: 0, error: 0 });
-						await terminal.runCommandInTerminal(`echo "foo"`);
-						await terminal.runCommandInTerminal(`bar`);
-						await settingsEditor.addUserSetting('terminal.integrated.shellIntegration.decorationIcon', '"zap"');
-						await settingsEditor.addUserSetting('terminal.integrated.shellIntegration.decorationIconSuccess', '"zap"');
-						await settingsEditor.addUserSetting('terminal.integrated.shellIntegration.decorationIconError', '"zap"');
-						await terminal.assertCommandDecorations(undefined, { updatedIcon: "zap", count: 3 });
 					});
 				});
 				describe('terminal.integrated.shellIntegration.decorationsEnabled should determine gutter and overview ruler decoration visibility', function () {
@@ -106,14 +94,19 @@ export function setup() {
 			after(async function () {
 				await settingsEditor.clearUserSettings();
 			});
-			beforeEach(async function () {
-				// Create the simplest system profile to get as little process interaction as possible
-				await terminal.createTerminal();
+
+			// Don't use beforeEach as that ignores the retry count, createEmptyTerminal has been
+			// flaky in the past
+			async function beforeEachSetup() {
+				// Use the simplest profile to get as little process interaction as possible
+				await terminal.createEmptyTerminal();
 				// Erase all content and reset cursor to top
-				await terminal.runCommandWithValue(TerminalCommandIdWithValue.WriteDataToTerminal, `${csi('2J')}${csi('H')}`);
-			});
+				await terminal.runCommandWithValue(TerminalCommandIdWithValue.WriteDataToTerminal, `${csi('2J')}${csi('3J')}${csi('H')}`);
+			}
+
 			describe('VS Code sequences', () => {
 				it('should handle the simple case', async () => {
+					await beforeEachSetup();
 					await terminal.runCommandWithValue(TerminalCommandIdWithValue.WriteDataToTerminal, `${vsc('A')}Prompt> ${vsc('B')}exitcode 0`);
 					await terminal.assertCommandDecorations({ placeholder: 1, success: 0, error: 0 });
 					await terminal.runCommandWithValue(TerminalCommandIdWithValue.WriteDataToTerminal, `\\r\\n${vsc('C')}Success\\r\\n${vsc('D;0')}`);
@@ -126,9 +119,9 @@ export function setup() {
 					await terminal.assertCommandDecorations({ placeholder: 1, success: 1, error: 1 });
 				});
 			});
-			// TODO: This depends on https://github.com/microsoft/vscode/issues/146587
-			describe.skip('Final Term sequences', () => {
+			describe('Final Term sequences', () => {
 				it('should handle the simple case', async () => {
+					await beforeEachSetup();
 					await terminal.runCommandWithValue(TerminalCommandIdWithValue.WriteDataToTerminal, `${ft('A')}Prompt> ${ft('B')}exitcode 0`);
 					await terminal.assertCommandDecorations({ placeholder: 1, success: 0, error: 0 });
 					await terminal.runCommandWithValue(TerminalCommandIdWithValue.WriteDataToTerminal, `\\r\\n${ft('C')}Success\\r\\n${ft('D;0')}`);

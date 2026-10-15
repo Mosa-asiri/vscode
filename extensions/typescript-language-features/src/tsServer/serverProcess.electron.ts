@@ -8,16 +8,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { Readable } from 'stream';
 import * as vscode from 'vscode';
-import * as nls from 'vscode-nls';
-import type * as Proto from '../protocol';
-import API from '../utils/api';
-import { TypeScriptServiceConfiguration } from '../utils/configuration';
+import { TypeScriptServiceConfiguration } from '../configuration/configuration';
 import { Disposable } from '../utils/dispose';
-import { TsServerProcess, TsServerProcessFactory, TsServerProcessKind } from './server';
+import { API } from './api';
+import type * as Proto from './protocol/protocol';
+import { TsServerLog, TsServerProcess, TsServerProcessFactory, TsServerProcessKind } from './server';
 import { TypeScriptVersionManager } from './versionManager';
 import { TypeScriptVersion } from './versionProvider';
+import { NodeVersionManager } from './nodeManager';
 
-const localize = nls.loadMessageBundle();
 
 const defaultSize: number = 8192;
 const contentLength: string = 'Content-Length: ';
@@ -25,6 +24,12 @@ const contentLengthSize: number = Buffer.byteLength(contentLength, 'utf8');
 const blank: number = Buffer.from(' ', 'utf8')[0];
 const backslashR: number = Buffer.from('\r', 'utf8')[0];
 const backslashN: number = Buffer.from('\n', 'utf8')[0];
+const gracefulExitTimeout = 5000;
+const tsServerExitRequest: Proto.Request = {
+	seq: 0,
+	type: 'request',
+	command: 'exit',
+};
 
 class ProtocolBuffer {
 
@@ -136,10 +141,12 @@ class Reader<T> extends Disposable {
 	}
 }
 
-function generatePatchedEnv(env: any, modulePath: string): any {
+function generatePatchedEnv(env: any, modulePath: string, hasExecPath: boolean): any {
 	const newEnv = Object.assign({}, env);
 
-	newEnv['ELECTRON_RUN_AS_NODE'] = '1';
+	if (!hasExecPath) {
+		newEnv['ELECTRON_RUN_AS_NODE'] = '1';
+	}
 	newEnv['NODE_PATH'] = path.join(modulePath, '..', '..', '..');
 
 	// Ensure we always have a PATH set
@@ -159,6 +166,24 @@ function getExecArgv(kind: TsServerProcessKind, configuration: TypeScriptService
 
 	if (configuration.maxTsServerMemory) {
 		args.push(`--max-old-space-size=${configuration.maxTsServerMemory}`);
+	}
+
+	if (configuration.diagnosticDir) {
+		args.push(`--diagnostic-dir=${configuration.diagnosticDir}`);
+	}
+
+	if (configuration.heapSnapshot > 0) {
+		args.push(`--heapsnapshot-near-heap-limit=${configuration.heapSnapshot}`);
+	}
+
+	if (configuration.heapProfile.enabled) {
+		args.push('--heap-prof');
+		if (configuration.heapProfile.dir) {
+			args.push(`--heap-prof-dir=${configuration.heapProfile.dir}`);
+		}
+		if (configuration.heapProfile.interval) {
+			args.push(`--heap-prof-interval=${configuration.heapProfile.interval}`);
+		}
 	}
 
 	return args;
@@ -188,10 +213,15 @@ function getTssDebugBrk(): string | undefined {
 }
 
 class IpcChildServerProcess extends Disposable implements TsServerProcess {
+	private _killTimeout: NodeJS.Timeout | undefined;
+	private _isShuttingDown = false;
+
 	constructor(
 		private readonly _process: child_process.ChildProcess,
+		private readonly _useGracefulShutdown: boolean,
 	) {
 		super();
+		this._process.once('exit', () => this.clearKillTimeout());
 	}
 
 	write(serverRequest: Proto.Request): void {
@@ -211,18 +241,47 @@ class IpcChildServerProcess extends Disposable implements TsServerProcess {
 	}
 
 	kill(): void {
-		this._process.kill();
+		if (!this._useGracefulShutdown) {
+			this._process.kill();
+			return;
+		}
+
+		if (this._isShuttingDown) {
+			return;
+		}
+		this._isShuttingDown = true;
+
+		try {
+			this._process.send(tsServerExitRequest);
+		} catch {
+			this._process.kill();
+			return;
+		}
+
+		this._killTimeout = setTimeout(() => this._process.kill(), gracefulExitTimeout);
+		this._killTimeout.unref?.();
+	}
+
+	private clearKillTimeout(): void {
+		if (this._killTimeout) {
+			clearTimeout(this._killTimeout);
+			this._killTimeout = undefined;
+		}
 	}
 }
 
 class StdioChildServerProcess extends Disposable implements TsServerProcess {
 	private readonly _reader: Reader<Proto.Response>;
+	private _killTimeout: NodeJS.Timeout | undefined;
+	private _isShuttingDown = false;
 
 	constructor(
 		private readonly _process: child_process.ChildProcess,
+		private readonly _useGracefulShutdown: boolean,
 	) {
 		super();
 		this._reader = this._register(new Reader<Proto.Response>(this._process.stdout!));
+		this._process.once('exit', () => this.clearKillTimeout());
 	}
 
 	write(serverRequest: Proto.Request): void {
@@ -243,7 +302,39 @@ class StdioChildServerProcess extends Disposable implements TsServerProcess {
 	}
 
 	kill(): void {
-		this._process.kill();
+		if (!this._useGracefulShutdown) {
+			this._process.kill();
+			this._reader.dispose();
+			return;
+		}
+
+		if (this._isShuttingDown) {
+			return;
+		}
+		this._isShuttingDown = true;
+
+		try {
+			this._process.stdin?.write(JSON.stringify(tsServerExitRequest) + '\r\n', 'utf8');
+			this._process.stdin?.end();
+		} catch {
+			this._process.kill();
+			this._reader.dispose();
+			return;
+		}
+
+		this._killTimeout = setTimeout(() => {
+			this._process.kill();
+			this._reader.dispose();
+		}, gracefulExitTimeout);
+		this._killTimeout.unref?.();
+	}
+
+	private clearKillTimeout(): void {
+		if (this._killTimeout) {
+			clearTimeout(this._killTimeout);
+			this._killTimeout = undefined;
+		}
+
 		this._reader.dispose();
 	}
 }
@@ -255,30 +346,42 @@ export class ElectronServiceProcessFactory implements TsServerProcessFactory {
 		kind: TsServerProcessKind,
 		configuration: TypeScriptServiceConfiguration,
 		versionManager: TypeScriptVersionManager,
+		nodeVersionManager: NodeVersionManager,
+		_tsserverLog: TsServerLog | undefined,
 	): TsServerProcess {
 		let tsServerPath = version.tsServerPath;
 
 		if (!fs.existsSync(tsServerPath)) {
-			vscode.window.showWarningMessage(localize('noServerFound', 'The path {0} doesn\'t point to a valid tsserver install. Falling back to bundled TypeScript version.', tsServerPath));
+			vscode.window.showWarningMessage(vscode.l10n.t("The path {0} doesn\'t point to a valid tsserver install. Falling back to bundled TypeScript version.", tsServerPath));
 			versionManager.reset();
 			tsServerPath = versionManager.currentVersion.tsServerPath;
 		}
 
-		const useIpc = version.apiVersion?.gte(API.v460);
+		const execPath = nodeVersionManager.currentVersion;
 
+		const env = generatePatchedEnv(process.env, tsServerPath, !!execPath);
 		const runtimeArgs = [...args];
+		const execArgv = getExecArgv(kind, configuration);
+		const useGracefulShutdown = configuration.heapProfile.enabled;
+		const useIpc = !execPath && version.apiVersion?.gte(API.v460);
 		if (useIpc) {
 			runtimeArgs.push('--useNodeIpc');
 		}
 
-		const childProcess = child_process.fork(tsServerPath, runtimeArgs, {
-			silent: true,
-			cwd: undefined,
-			env: generatePatchedEnv(process.env, tsServerPath),
-			execArgv: getExecArgv(kind, configuration),
-			stdio: useIpc ? ['pipe', 'pipe', 'pipe', 'ipc'] : undefined,
-		});
+		const childProcess = execPath ?
+			child_process.spawn(execPath, [...execArgv, tsServerPath, ...runtimeArgs], {
+				windowsHide: true,
+				cwd: undefined,
+				env,
+			}) :
+			child_process.fork(tsServerPath, runtimeArgs, {
+				silent: true,
+				cwd: undefined,
+				env,
+				execArgv,
+				stdio: useIpc ? ['pipe', 'pipe', 'pipe', 'ipc'] : undefined,
+			});
 
-		return useIpc ? new IpcChildServerProcess(childProcess) : new StdioChildServerProcess(childProcess);
+		return useIpc ? new IpcChildServerProcess(childProcess, useGracefulShutdown) : new StdioChildServerProcess(childProcess, useGracefulShutdown);
 	}
 }

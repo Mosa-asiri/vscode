@@ -4,13 +4,13 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import * as nls from 'vscode-nls';
+import { TypeScriptServiceConfiguration } from '../configuration/configuration';
+import { tsNativeExtensionId } from '../commands/useTsgo';
+import { readUnifiedConfig, unifiedConfigSection } from '../utils/configuration';
 import { setImmediate } from '../utils/async';
-import { TypeScriptServiceConfiguration } from '../utils/configuration';
 import { Disposable } from '../utils/dispose';
 import { ITypeScriptVersionProvider, TypeScriptVersion } from './versionProvider';
 
-const localize = nls.loadMessageBundle();
 
 const useWorkspaceTsdkStorageKey = 'typescript.useWorkspaceTsdk';
 const suppressPromptWorkspaceTsdkStorageKey = 'typescript.suppressPromptWorkspaceTsdk';
@@ -79,19 +79,27 @@ export class TypeScriptVersionManager extends Disposable {
 	}
 
 	public async promptUserForVersion(): Promise<void> {
-		const selected = await vscode.window.showQuickPick<QuickPickItem>([
+		const nativePreviewItem = this.getNativePreviewPickItem();
+		const items: QuickPickItem[] = [
 			this.getBundledPickItem(),
 			...this.getLocalPickItems(),
+		];
+
+		if (nativePreviewItem) {
+			items.push(nativePreviewItem);
+		}
+
+		items.push(
 			{
 				kind: vscode.QuickPickItemKind.Separator,
 				label: '',
 				run: () => { /* noop */ },
 			},
 			LearnMorePickItem,
-		], {
-			placeHolder: localize(
-				'selectTsVersion',
-				"Select the TypeScript version used for JavaScript and TypeScript language features"),
+		);
+
+		const selected = await vscode.window.showQuickPick<QuickPickItem>(items, {
+			placeHolder: vscode.l10n.t("Select the TypeScript version used for JavaScript and TypeScript language features"),
 		});
 
 		return selected?.run();
@@ -102,7 +110,7 @@ export class TypeScriptVersionManager extends Disposable {
 		return {
 			label: (!this.useWorkspaceTsdkSetting || !vscode.workspace.isTrusted
 				? '• '
-				: '') + localize('useVSCodeVersionOption', "Use VS Code's Version"),
+				: '') + vscode.l10n.t("Use VS Code's Version"),
 			description: bundledVersion.displayName,
 			detail: bundledVersion.pathLabel,
 			run: async () => {
@@ -117,20 +125,36 @@ export class TypeScriptVersionManager extends Disposable {
 			return {
 				label: (this.useWorkspaceTsdkSetting && vscode.workspace.isTrusted && this.currentVersion.eq(version)
 					? '• '
-					: '') + localize('useWorkspaceVersionOption', "Use Workspace Version"),
+					: '') + vscode.l10n.t("Use Workspace Version"),
 				description: version.displayName,
 				detail: version.pathLabel,
 				run: async () => {
 					const trusted = await vscode.workspace.requestWorkspaceTrust();
 					if (trusted) {
 						await this.workspaceState.update(useWorkspaceTsdkStorageKey, true);
-						const tsConfig = vscode.workspace.getConfiguration('typescript');
-						await tsConfig.update('tsdk', version.pathLabel, false);
+						await vscode.workspace.getConfiguration(unifiedConfigSection).update('tsdk.path', version.pathLabel, false);
 						this.updateActiveVersion(version);
 					}
 				},
 			};
 		});
+	}
+
+	private getNativePreviewPickItem(): QuickPickItem | undefined {
+		const nativePreviewExtension = vscode.extensions.getExtension(tsNativeExtensionId);
+		if (!nativePreviewExtension) {
+			return undefined;
+		}
+
+		const isUsingTsgo = readUnifiedConfig<boolean>('experimental.useTsgo', false, { fallbackSection: 'typescript' });
+
+		return {
+			label: (isUsingTsgo ? '• ' : '') + vscode.l10n.t("Use TypeScript Native Preview (Experimental)"),
+			description: nativePreviewExtension.packageJSON.version,
+			run: async () => {
+				await vscode.commands.executeCommand('typescript.native-preview.enable');
+			},
+		};
 	}
 
 	private async promptUseWorkspaceTsdk(): Promise<void> {
@@ -140,11 +164,11 @@ export class TypeScriptVersionManager extends Disposable {
 			throw new Error('Could not prompt to use workspace TypeScript version because no workspace version is specified');
 		}
 
-		const allowIt = localize('allow', 'Allow');
-		const dismissPrompt = localize('dismiss', 'Dismiss');
-		const suppressPrompt = localize('suppress prompt', 'Never in this Workspace');
+		const allowIt = vscode.l10n.t("Allow");
+		const dismissPrompt = vscode.l10n.t("Dismiss");
+		const suppressPrompt = vscode.l10n.t("Never in this Workspace");
 
-		const result = await vscode.window.showInformationMessage(localize('promptUseWorkspaceTsdk', 'This workspace contains a TypeScript version. Would you like to use the workspace TypeScript version for TypeScript and JavaScript language features?'),
+		const result = await vscode.window.showInformationMessage(vscode.l10n.t("This workspace contains a TypeScript version. Would you like to use the workspace TypeScript version for TypeScript and JavaScript language features?"),
 			allowIt,
 			dismissPrompt,
 			suppressPrompt
@@ -185,7 +209,7 @@ export class TypeScriptVersionManager extends Disposable {
 }
 
 const LearnMorePickItem: QuickPickItem = {
-	label: localize('learnMore', "Learn more about managing TypeScript versions"),
+	label: vscode.l10n.t("Learn more about managing TypeScript versions"),
 	description: '',
 	run: () => {
 		vscode.env.openExternal(vscode.Uri.parse('https://go.microsoft.com/fwlink/?linkid=839919'));

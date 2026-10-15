@@ -5,9 +5,9 @@
 
 import * as vscode from 'vscode';
 
-export const noopToken = new class implements vscode.CancellationToken {
-	_onCancellationRequestedEmitter = new vscode.EventEmitter<void>();
-	onCancellationRequested = this._onCancellationRequestedEmitter.event;
+export const noopToken: vscode.CancellationToken = new class implements vscode.CancellationToken {
+	readonly #onCancellationRequestedEmitter = new vscode.EventEmitter<void>();
+	onCancellationRequested = this.#onCancellationRequestedEmitter.event;
 
 	get isCancellationRequested() { return false; }
 };
