@@ -22,7 +22,7 @@ import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { Iterable } from '../../../../../../base/common/iterator.js';
 import { KeyCode } from '../../../../../../base/common/keyCodes.js';
 import { Lazy } from '../../../../../../base/common/lazy.js';
-import { Disposable, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../../../base/common/lifecycle.js';
 import { ResourceSet } from '../../../../../../base/common/map.js';
 import { MarshalledId } from '../../../../../../base/common/marshallingIds.js';
 import { Schemas } from '../../../../../../base/common/network.js';
@@ -35,7 +35,7 @@ import { URI } from '../../../../../../base/common/uri.js';
 import { IEditorConstructionOptions } from '../../../../../../editor/browser/config/editorConfiguration.js';
 import { EditorExtensionsRegistry } from '../../../../../../editor/browser/editorExtensions.js';
 import { CodeEditorWidget } from '../../../../../../editor/browser/widget/codeEditor/codeEditorWidget.js';
-import { EditorLayoutInfo, EditorOptions, IEditorOptions } from '../../../../../../editor/common/config/editorOptions.js';
+import { EditorOptions, IEditorOptions, IEditorScrollbarOptions } from '../../../../../../editor/common/config/editorOptions.js';
 import { IDimension } from '../../../../../../editor/common/core/2d/dimension.js';
 import { IPosition } from '../../../../../../editor/common/core/position.js';
 import { IRange, Range } from '../../../../../../editor/common/core/range.js';
@@ -82,20 +82,20 @@ import { InlineChatConfigKeys } from '../../../../inlineChat/common/inlineChat.j
 import { IChatViewTitleActionContext } from '../../../common/actions/chatActions.js';
 import { ChatContextKeys } from '../../../common/actions/chatContextKeys.js';
 import { ChatRequestVariableSet, IChatRequestVariableEntry, isElementVariableEntry, isImageVariableEntry, isNotebookOutputVariableEntry, isPasteVariableEntry, isPromptFileVariableEntry, isPromptTextVariableEntry, isSCMHistoryItemChangeRangeVariableEntry, isSCMHistoryItemChangeVariableEntry, isSCMHistoryItemVariableEntry, isStringVariableEntry } from '../../../common/attachments/chatVariableEntries.js';
-import { ChatMode, IChatMode, IChatModeService } from '../../../common/chatModes.js';
+import { ChatMode, getModeNameForTelemetry, IChatMode, IChatModeService } from '../../../common/chatModes.js';
 import { IChatFollowup, IChatQuestionCarousel, IChatService, IChatSessionContext } from '../../../common/chatService/chatService.js';
 import { agentOptionId, IChatSessionProviderOptionGroup, IChatSessionProviderOptionItem, IChatSessionsService, isIChatSessionFileChange2, localChatSessionType } from '../../../common/chatSessionsService.js';
-import { ChatAgentLocation, ChatConfiguration, ChatModeKind, validateChatMode } from '../../../common/constants.js';
+import { ChatAgentLocation, ChatConfiguration, ChatModeKind, ChatPermissionLevel, validateChatMode } from '../../../common/constants.js';
 import { IChatEditingSession, IModifiedFileEntry, ModifiedFileEntryState } from '../../../common/editing/chatEditingService.js';
 import { ILanguageModelChatMetadata, ILanguageModelChatMetadataAndIdentifier, ILanguageModelsService } from '../../../common/languageModels.js';
 import { IChatModelInputState, IChatRequestModeInfo, IInputModel } from '../../../common/model/chatModel.js';
-import { ChatQuestionCarouselData } from '../../../common/model/chatProgressTypes/chatQuestionCarouselData.js';
+import { filterModelsForSession, findDefaultModel, hasModelsTargetingSession, isModelValidForSession, mergeModelsWithCache, resolveModelFromSyncState, shouldResetModelToDefault, shouldResetOnModelListChange, shouldRestoreLateArrivingModel, shouldRestorePersistedModel } from './chatModelSelectionLogic.js';
 import { getChatSessionType } from '../../../common/model/chatUri.js';
 import { IChatResponseViewModel, isResponseVM } from '../../../common/model/chatViewModel.js';
 import { IChatAgentService } from '../../../common/participants/chatAgents.js';
 import { ILanguageModelToolsService } from '../../../common/tools/languageModelToolsService.js';
 import { ChatHistoryNavigator } from '../../../common/widget/chatWidgetHistoryService.js';
-import { ChatSessionPrimaryPickerAction, ChatSubmitAction, IChatExecuteActionContext, OpenDelegationPickerAction, OpenModelPickerAction, OpenModePickerAction, OpenSessionTargetPickerAction, OpenWorkspacePickerAction } from '../../actions/chatExecuteActions.js';
+import { ChatSessionPrimaryPickerAction, ChatSubmitAction, IChatExecuteActionContext, OpenDelegationPickerAction, OpenModelPickerAction, OpenModePickerAction, OpenPermissionPickerAction, OpenSessionTargetPickerAction, OpenWorkspacePickerAction } from '../../actions/chatExecuteActions.js';
 import { AgentSessionProviders, getAgentSessionProvider } from '../../agentSessions/agentSessions.js';
 import { IAgentSessionsService } from '../../agentSessions/agentSessionsService.js';
 import { ChatAttachmentModel } from '../../attachments/chatAttachmentModel.js';
@@ -114,6 +114,7 @@ import { ChatQuestionCarouselPart, IChatQuestionCarouselOptions } from '../chatC
 import { IChatContentPartRenderContext } from '../chatContentParts/chatContentParts.js';
 import { CollapsibleListPool, IChatCollapsibleListItem } from '../chatContentParts/chatReferencesContentPart.js';
 import { ChatTodoListWidget } from '../chatContentParts/chatTodoListWidget.js';
+import { ChatArtifactsWidget } from '../chatArtifactsWidget.js';
 import { ChatDragAndDrop } from '../chatDragAndDrop.js';
 import { ChatFollowups } from './chatFollowups.js';
 import { ChatInputPartWidgetController } from './chatInputPartWidgets.js';
@@ -122,16 +123,22 @@ import { ChatSelectedTools } from './chatSelectedTools.js';
 import { DelegationSessionPickerActionItem } from './delegationSessionPickerActionItem.js';
 import { IModelPickerDelegate } from './modelPickerActionItem.js';
 import { IModePickerDelegate, ModePickerActionItem } from './modePickerActionItem.js';
+import { IPermissionPickerDelegate, PermissionPickerActionItem } from './permissionPickerActionItem.js';
 import { SessionTypePickerActionItem } from './sessionTargetPickerActionItem.js';
 import { WorkspacePickerActionItem } from './workspacePickerActionItem.js';
 import { ChatContextUsageWidget } from '../../widgetHosts/viewPane/chatContextUsageWidget.js';
-import { Target } from '../../../common/promptSyntax/service/promptsService.js';
+import { Target } from '../../../common/promptSyntax/promptTypes.js';
 import { EnhancedModelPickerActionItem } from './modelPickerActionItem2.js';
+import { findLast } from '../../../../../../base/common/arraysFind.js';
+import { ConfigureToolsAction } from '../../actions/chatToolActions.js';
 
 const $ = dom.$;
 
 const INPUT_EDITOR_MAX_HEIGHT = 250;
+const INPUT_EDITOR_LINE_HEIGHT = 20;
+const INPUT_EDITOR_PADDING = { compact: { top: 2, bottom: 2 }, default: { top: 12, bottom: 12 } };
 const CachedLanguageModelsKey = 'chat.cachedLanguageModels.v2';
+const CHAT_INPUT_PICKER_COLLAPSE_WIDTH = 320;
 
 export interface IChatInputStyles {
 	overlayBackground: string;
@@ -154,6 +161,7 @@ export interface IChatInputPartOptions {
 	enableImplicitContext?: boolean;
 	supportsChangingModes?: boolean;
 	dndContainer?: HTMLElement;
+	inputEditorMinLines?: number;
 	widgetViewKindTag: string;
 	/**
 	 * Optional delegate for the session target picker.
@@ -166,6 +174,11 @@ export interface IChatInputPartOptions {
 	 * for their chat request. This is useful for empty window contexts.
 	 */
 	workspacePickerDelegate?: IWorkspacePickerDelegate;
+	/**
+	 * Whether we are running in the sessions window.
+	 * When true, the secondary toolbar (permissions picker) is hidden.
+	 */
+	isSessionsWindow?: boolean;
 }
 
 export interface IWorkingSetEntry {
@@ -206,17 +219,23 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	private static _counter = 0;
 
 	private _workingSetCollapsed = observableValue('chatInputPart.workingSetCollapsed', true);
+	private _stableInputPartWidth = observableValue('chatInputPart.stableInputPartWidth', 0);
 	private readonly _chatInputTodoListWidget = this._register(new MutableDisposable<ChatTodoListWidget>());
-	private readonly _chatQuestionCarouselWidget = this._register(new MutableDisposable<ChatQuestionCarouselPart>());
-	private readonly _chatQuestionCarouselDisposables = this._register(new DisposableStore());
-	private _currentQuestionCarouselResponseId: string | undefined;
-	private _currentQuestionCarouselSessionResource: URI | undefined;
+	private readonly _chatArtifactsWidget = this._register(new MutableDisposable<ChatArtifactsWidget>());
+	private readonly _chatQuestionCarouselWidgets = this._register(new DisposableMap<string, ChatQuestionCarouselPart>());
+	private readonly _questionCarouselResponseIds = new Map<string, string>();
+	private readonly _questionCarouselSessionResources = new Map<string, URI>();
 	private _hasQuestionCarouselContextKey: IContextKey<boolean> | undefined;
 	private readonly _chatEditingTodosDisposables = this._register(new DisposableStore());
 	private _lastEditingSessionResource: URI | undefined;
 
 	private _onDidLoadInputState: Emitter<void> = this._register(new Emitter());
 	readonly onDidLoadInputState: Event<void> = this._onDidLoadInputState.event;
+	private readonly _toolbarRelayoutScheduler = this._register(new RunOnceScheduler(() => {
+		if (typeof this.cachedWidth === 'number') {
+			this.layout(this.cachedWidth);
+		}
+	}, 0));
 
 	private _onDidFocus = this._register(new Emitter<void>());
 	readonly onDidFocus: Event<void> = this._onDidFocus.event;
@@ -241,15 +260,15 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 	readonly selectedToolsModel: ChatSelectedTools;
 
-	public getAttachedContext(sessionResource: URI) {
+	public getAttachedContext() {
 		const contextArr = new ChatRequestVariableSet();
 		contextArr.add(...this.attachmentModel.attachments, ...this.chatContextService.getWorkspaceContextItems());
 		return contextArr;
 	}
 
-	public getAttachedAndImplicitContext(sessionResource: URI): ChatRequestVariableSet {
+	public getAttachedAndImplicitContext(): ChatRequestVariableSet {
 
-		const contextArr = this.getAttachedContext(sessionResource);
+		const contextArr = this.getAttachedContext();
 
 		if (this.implicitContext) {
 			const implicitChatVariables = this.implicitContext.enabledBaseEntries(this.configurationService.getValue<boolean>('chat.implicitContext.suggestedContext'));
@@ -272,10 +291,14 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	private readonly _contextResourceLabels: ResourceLabels;
 
 	private readonly inputEditorMaxHeight: number;
+	private readonly inputEditorMinHeight: number | undefined;
 	private inputEditorHeight: number = 0;
+	private _maxHeight: number | undefined;
 	private container!: HTMLElement;
 
 	private inputSideToolbarContainer?: HTMLElement;
+	private secondaryToolbarContainer!: HTMLElement;
+	private secondaryToolbar!: MenuWorkbenchToolBar;
 
 	private followupsContainer!: HTMLElement;
 	private readonly followupsDisposables: DisposableStore = this._register(new DisposableStore());
@@ -290,6 +313,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 	private chatEditingSessionWidgetContainer!: HTMLElement;
 	private chatInputTodoListWidgetContainer!: HTMLElement;
+	private chatArtifactsWidgetContainer!: HTMLElement;
 	private chatGettingStartedTipContainer!: HTMLElement;
 	private chatQuestionCarouselContainer!: HTMLElement;
 	private chatInputWidgetsContainer!: HTMLElement;
@@ -312,6 +336,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 	private _inputEditor!: CodeEditorWidget;
 	private _inputEditorElement!: HTMLElement;
+	private _forceVisibleScrollbarUntilAccept = false;
 
 	// Reference to the input model for syncing input state
 	private _inputModel: IInputModel | undefined;
@@ -353,15 +378,18 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	private chatSessionHasOptions: IContextKey<boolean>;
 	private chatSessionOptionsValid: IContextKey<boolean>;
 	private agentSessionTypeKey: IContextKey<string>;
+	private chatSessionSupportsDelegationKey: IContextKey<boolean>;
 	private chatSessionHasCustomAgentTarget: IContextKey<boolean>;
 	private chatSessionHasTargetedModels: IContextKey<boolean>;
 	private modelWidget: EnhancedModelPickerActionItem | undefined;
 	private modeWidget: ModePickerActionItem | undefined;
+	private permissionWidget: PermissionPickerActionItem | undefined;
 	private sessionTargetWidget: SessionTypePickerActionItem | undefined;
 	private delegationWidget: DelegationSessionPickerActionItem | undefined;
 	private chatSessionPickerWidgets: Map<string, ChatSessionPickerActionItem | SearchableOptionPickerActionItem> = new Map();
 	private chatSessionPickerContainer: HTMLElement | undefined;
 	private _lastSessionPickerAction: MenuItemAction | undefined;
+	private _lastSessionPickerOptions: IChatInputPickerOptions | undefined;
 	private readonly _waitForPersistedLanguageModel: MutableDisposable<IDisposable> = this._register(new MutableDisposable<IDisposable>());
 	private readonly _chatSessionOptionEmitters: Map<string, Emitter<IChatSessionProviderOptionItem>> = new Map();
 
@@ -391,6 +419,8 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	readonly onDidChangeCurrentChatMode: Event<void> = this._onDidChangeCurrentChatMode.event;
 
 	private readonly _currentModeObservable: ISettableObservable<IChatMode>;
+	private readonly _currentPermissionLevel: ISettableObservable<ChatPermissionLevel>;
+	private permissionLevelKey: IContextKey<ChatPermissionLevel>;
 
 	public get currentModeKind(): ChatModeKind {
 		const mode = this._currentModeObservable.get();
@@ -403,6 +433,10 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		return this._currentModeObservable;
 	}
 
+	public get currentPermissionLevelObs(): IObservable<ChatPermissionLevel> {
+		return this._currentPermissionLevel;
+	}
+
 	public get currentModeInfo(): IChatRequestModeInfo {
 		const mode = this._currentModeObservable.get();
 		const modeId: 'ask' | 'agent' | 'edit' | 'custom' | undefined = mode.isBuiltin ? this.currentModeKind : 'custom';
@@ -412,13 +446,17 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			kind: this.currentModeKind,
 			isBuiltin: mode.isBuiltin,
 			modeInstructions: modeInstructions ? {
+				uri: mode.uri?.get(),
 				name: mode.name.get(),
 				content: modeInstructions.content,
 				toolReferences: this.toolService.toToolReferences(modeInstructions.toolReferences),
 				metadata: modeInstructions.metadata,
+				isBuiltin: mode.isBuiltin
 			} : undefined,
 			modeId: modeId,
+			modeName: getModeNameForTelemetry(mode),
 			applyCodeBlockSuggestionId: undefined,
+			permissionLevel: this._currentPermissionLevel.get(),
 		};
 	}
 
@@ -519,6 +557,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 		this._contextResourceLabels = this._register(this.instantiationService.createInstance(ResourceLabels, { onDidChangeVisibility: this._onDidChangeVisibility.event }));
 		this._currentModeObservable = observableValue<IChatMode>('currentMode', this.options.defaultMode ?? ChatMode.Agent);
+		this._currentPermissionLevel = observableValue<ChatPermissionLevel>('permissionLevel', ChatPermissionLevel.Default);
 		this._register(this.editorService.onDidActiveEditorChange(() => {
 			this._indexOfLastOpenedContext = -1;
 			this.refreshChatSessionPickers();
@@ -527,7 +566,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		// React to chat session option changes for the active session
 		this._register(this.chatSessionsService.onDidChangeSessionOptions(e => {
 			const sessionResource = this._widget?.viewModel?.model.sessionResource;
-			if (sessionResource && isEqual(sessionResource, e)) {
+			if (sessionResource && isEqual(sessionResource, e.sessionResource)) {
 				// Options changed for our current session - refresh pickers
 				this.refreshChatSessionPickers();
 			}
@@ -538,7 +577,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			if (sessionResource) {
 				const ctx = this.chatService.getChatSessionFromInternalUri(sessionResource);
 				const delegateSessionType = this.options.sessionTypePickerDelegate?.getActiveSessionProvider?.();
-				if (ctx?.chatSessionType === chatSessionType || delegateSessionType === chatSessionType) {
+				if (ctx && (getChatSessionType(ctx.chatSessionResource) === chatSessionType) || delegateSessionType === chatSessionType) {
 					this.refreshChatSessionPickers();
 				}
 			}
@@ -549,6 +588,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			this._register(this.options.sessionTypePickerDelegate.onDidChangeActiveSessionProvider(async (newSessionType) => {
 				this.computeVisibleOptionGroups();
 				this.agentSessionTypeKey.set(newSessionType);
+				this.chatSessionSupportsDelegationKey.set(this.chatSessionsService.supportsDelegationForSessionType(newSessionType));
 				this.updateWidgetLockStateFromSessionType(newSessionType);
 				this.refreshChatSessionPickers();
 			}));
@@ -560,6 +600,8 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		this.dnd = this._register(this.instantiationService.createInstance(ChatDragAndDrop, () => this._widget, this._attachmentModel, styles));
 
 		this.inputEditorMaxHeight = this.options.renderStyle === 'compact' ? INPUT_EDITOR_MAX_HEIGHT / 3 : INPUT_EDITOR_MAX_HEIGHT;
+		const padding = this.options.renderStyle === 'compact' ? INPUT_EDITOR_PADDING.compact : INPUT_EDITOR_PADDING.default;
+		this.inputEditorMinHeight = this.options.inputEditorMinLines ? this.options.inputEditorMinLines * INPUT_EDITOR_LINE_HEIGHT + padding.top + padding.bottom : undefined;
 
 		this.inputEditorHasText = ChatContextKeys.inputHasText.bindTo(contextKeyService);
 		this.chatCursorAtTop = ChatContextKeys.inputCursorAtTop.bindTo(contextKeyService);
@@ -568,17 +610,20 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		this.chatModeKindKey = ChatContextKeys.chatModeKind.bindTo(contextKeyService);
 		this.chatModeNameKey = ChatContextKeys.chatModeName.bindTo(contextKeyService);
 		this.chatModelIdKey = ChatContextKeys.chatModelId.bindTo(contextKeyService);
+		this.permissionLevelKey = ChatContextKeys.chatPermissionLevel.bindTo(contextKeyService);
 		this.withinEditSessionKey = ChatContextKeys.withinEditSessionDiff.bindTo(contextKeyService);
 		this.filePartOfEditSessionKey = ChatContextKeys.filePartOfEditSession.bindTo(contextKeyService);
 		this.chatSessionHasOptions = ChatContextKeys.chatSessionHasModels.bindTo(contextKeyService);
 		this.chatSessionOptionsValid = ChatContextKeys.chatSessionOptionsValid.bindTo(contextKeyService);
 		this.agentSessionTypeKey = ChatContextKeys.agentSessionType.bindTo(contextKeyService);
+		this.chatSessionSupportsDelegationKey = ChatContextKeys.chatSessionSupportsDelegation.bindTo(contextKeyService);
 
 		// Initialize agentSessionType from delegate if available
 		if (this.options.sessionTypePickerDelegate?.getActiveSessionProvider) {
 			const initialSessionType = this.options.sessionTypePickerDelegate.getActiveSessionProvider();
 			if (initialSessionType) {
 				this.agentSessionTypeKey.set(initialSessionType);
+				this.chatSessionSupportsDelegationKey.set(this.chatSessionsService.supportsDelegationForSessionType(initialSessionType));
 			}
 		}
 		this.chatSessionHasCustomAgentTarget = ChatContextKeys.chatSessionHasCustomAgentTarget.bindTo(contextKeyService);
@@ -614,8 +659,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		this.initSelectedModel();
 
 		this._register(this.languageModelsService.onDidChangeLanguageModels(() => {
-			const selectedModel = this._currentLanguageModel ? this.getModels().find(m => m.identifier === this._currentLanguageModel.get()?.identifier) : undefined;
-			if (!this.currentLanguageModel || !selectedModel) {
+			if (shouldResetOnModelListChange(this._currentLanguageModel.get()?.identifier, this.getModels())) {
 				this.setCurrentLanguageModelToDefault();
 			}
 		}));
@@ -653,10 +697,21 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			if (sessionResource) {
 				const ctx = this.chatService.getChatSessionFromInternalUri(sessionResource);
 				if (ctx) {
-					this.chatSessionsService.notifySessionOptionsChange(
-						ctx.chatSessionResource,
-						[{ optionId: agentOptionId, value: mode.isBuiltin ? '' : modeName }]
-					).catch(err => this.logService.error('Failed to notify extension of agent change:', err));
+					let needsUpdate = true;
+					const agentOption = this.chatSessionsService.getSessionOption(ctx.chatSessionResource, agentOptionId);
+					if (typeof agentOption !== 'undefined') {
+						const agentId = (typeof agentOption === 'string' ? agentOption : agentOption.id) || ChatMode.Agent.id;
+						const isDefaultAgent = agentId === ChatMode.Agent.id;
+						needsUpdate = isDefaultAgent
+							? mode.id !== ChatMode.Agent.id
+							: mode.label.read(undefined) !== agentId; // Extensions use Label (name) as identifier for custom agents.
+					}
+					if (needsUpdate) {
+						this.chatSessionsService.updateSessionOptions(
+							ctx.chatSessionResource,
+							new Map([[agentOptionId, mode.isBuiltin ? '' : modeName]])
+						);
+					}
 				}
 			}
 		}));
@@ -697,25 +752,20 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		const persistedAsDefault = this.storageService.getBoolean(this.getSelectedModelIsDefaultStorageKey(), StorageScope.APPLICATION, true);
 
 		if (persistedSelection) {
-			const model = this.getModels().find(m => m.identifier === persistedSelection);
-			if (model) {
-				// Only restore the model if it wasn't the default at the time of storing or it is now the default
-				if (!persistedAsDefault || model.metadata.isDefaultForLocation[this.location]) {
-					this.setCurrentLanguageModel(model);
-					this.checkModelSupported();
-				}
-			} else {
+			const result = shouldRestorePersistedModel(persistedSelection, persistedAsDefault, this.getModels(), this.location);
+			if (result.shouldRestore && result.model) {
+				this.setCurrentLanguageModel(result.model);
+				this.checkModelSupported();
+			} else if (!result.model) {
 				this._waitForPersistedLanguageModel.value = this.languageModelsService.onDidChangeLanguageModels(e => {
 					const persistedModel = this.languageModelsService.lookupLanguageModel(persistedSelection);
 					if (persistedModel) {
 						this._waitForPersistedLanguageModel.clear();
 
-						// Only restore the model if it wasn't the default at the time of storing or it is now the default
-						if (!persistedAsDefault || persistedModel.isDefaultForLocation[this.location]) {
-							if (persistedModel.isUserSelectable) {
-								this.setCurrentLanguageModel({ metadata: persistedModel, identifier: persistedSelection });
-								this.checkModelSupported();
-							}
+						const lateModel = { metadata: persistedModel, identifier: persistedSelection };
+						if (shouldRestoreLateArrivingModel(persistedSelection, persistedAsDefault, lateModel, this.location)) {
+							this.setCurrentLanguageModel(lateModel);
+							this.checkModelSupported();
 						}
 					} else {
 						this.setCurrentLanguageModelToDefault();
@@ -726,11 +776,6 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 		this._register(this._onDidChangeCurrentChatMode.event(() => {
 			this.checkModelSupported();
-		}));
-		this._register(this.configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration(ChatConfiguration.Edits2Enabled)) {
-				this.checkModelSupported();
-			}
 		}));
 	}
 
@@ -778,6 +823,17 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		this.modeWidget?.show();
 	}
 
+	public openPermissionPicker(): void {
+		this.permissionWidget?.show();
+	}
+
+	public setPermissionLevel(level: ChatPermissionLevel): void {
+		this._currentPermissionLevel.set(level, undefined);
+		this.permissionLevelKey.set(level);
+		this.permissionWidget?.refresh();
+		this._syncInputStateToModel();
+	}
+
 	public openSessionTargetPicker(): void {
 		this.sessionTargetWidget?.show();
 	}
@@ -795,8 +851,9 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	/**
 	 * Create picker widgets for all option groups available for the current session type.
 	 */
-	private createChatSessionPickerWidgets(action: MenuItemAction): (ChatSessionPickerActionItem | SearchableOptionPickerActionItem)[] {
+	private createChatSessionPickerWidgets(action: MenuItemAction, pickerOptions?: IChatInputPickerOptions): (ChatSessionPickerActionItem | SearchableOptionPickerActionItem)[] {
 		this._lastSessionPickerAction = action;
+		this._lastSessionPickerOptions = pickerOptions;
 
 		const result = this.computeVisibleOptionGroups();
 		if (!result) {
@@ -829,10 +886,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 					const sessionResource = this._widget?.viewModel?.model.sessionResource;
 					const currentCtx = sessionResource ? this.chatService.getChatSessionFromInternalUri(sessionResource) : undefined;
 					if (currentCtx) {
-						this.chatSessionsService.notifySessionOptionsChange(
-							currentCtx.chatSessionResource,
-							[{ optionId: optionGroup.id, value: option }]
-						).catch(err => this.logService.error(`Failed to notify extension of ${optionGroup.id} change:`, err));
+						this.chatSessionsService.setSessionOption(currentCtx.chatSessionResource, optionGroup.id, option);
 					}
 
 					// Refresh pickers to re-evaluate visibility of other option groups
@@ -847,7 +901,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 				}
 			};
 
-			const widget = this.instantiationService.createInstance(optionGroup.searchable ? SearchableOptionPickerActionItem : ChatSessionPickerActionItem, action, initialState, itemDelegate);
+			const widget = this.instantiationService.createInstance(optionGroup.searchable ? SearchableOptionPickerActionItem : ChatSessionPickerActionItem, action, initialState, itemDelegate, pickerOptions);
 			this.chatSessionPickerWidgets.set(optionGroup.id, widget);
 			widgets.push(widget);
 		}
@@ -859,6 +913,12 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	 * Set the input model reference for syncing input state
 	 */
 	setInputModel(model: IInputModel, chatSessionIsEmpty: boolean): void {
+		// Flush current state to the outgoing model before switching,
+		// so it preserves the latest permission level and other picker state.
+		if (this._inputModel) {
+			this._syncInputStateToModel();
+		}
+
 		this._inputModel = model;
 		this._modelSyncDisposables.clear();
 		this.selectedToolsModel.resetSessionEnablementState();
@@ -929,14 +989,18 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 			// Sync selected model - validate it belongs to the current session's model pool
 			if (state?.selectedModel) {
-				const lm = this._currentLanguageModel.get();
-				if (!lm || lm.identifier !== state.selectedModel.identifier) {
-					if (this.isModelValidForCurrentSession(state.selectedModel)) {
-						this.setCurrentLanguageModel(state.selectedModel);
-					} else {
-						// Model from state doesn't belong to this session's pool - use default
-						this.setCurrentLanguageModelToDefault();
-					}
+				const allModels = this.getAllMergedModels();
+				const sessionType = this.getCurrentSessionType();
+				const syncResult = resolveModelFromSyncState(state.selectedModel, this._currentLanguageModel.get(), allModels, sessionType, {
+					location: this.location,
+					currentModeKind: this.currentModeKind,
+					isInlineChatV2Enabled: !!this.configurationService.getValue(InlineChatConfigKeys.EnableV2),
+					sessionType,
+				});
+				if (syncResult.action === 'apply') {
+					this.setCurrentLanguageModel(state.selectedModel);
+				} else if (syncResult.action === 'default') {
+					this.setCurrentLanguageModelToDefault();
 				}
 			}
 
@@ -953,6 +1017,16 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 				this._inputEditor.setValue(state?.inputText || '');
 				if (state?.selections.length) {
 					this._inputEditor.setSelections(state.selections);
+				}
+			}
+
+			// Sync permission level (skip if global auto-approve is on, so the picker stays unchanged)
+			if (!this.configurationService.getValue<boolean>(ChatConfiguration.GlobalAutoApprove)) {
+				const targetLevel = state?.permissionLevel ?? ChatPermissionLevel.Default;
+				if (this._currentPermissionLevel.get() !== targetLevel) {
+					this._currentPermissionLevel.set(targetLevel, undefined);
+					this.permissionLevelKey.set(targetLevel);
+					this.permissionWidget?.refresh();
 				}
 			}
 
@@ -982,6 +1056,9 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		}
 		this._inputModel?.setState(state);
 		this._isSyncingToOrFromInputModel = false;
+
+		// Some picker label changed size; re-evaluate toolbar overflow
+		queueMicrotask(() => this.inputActionsToolbar?.relayout());
 	}
 
 	public setCurrentLanguageModel(model: ILanguageModelChatMetadataAndIdentifier) {
@@ -1002,7 +1079,13 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 	private checkModelSupported(): void {
 		const lm = this._currentLanguageModel.get();
-		if (lm && (!this.modelSupportedForDefaultAgent(lm) || !this.modelSupportedForInlineChat(lm) || !this.isModelValidForCurrentSession(lm))) {
+		const allModels = this.getAllMergedModels();
+		if (shouldResetModelToDefault(lm, this.getModels(), {
+			location: this.location,
+			currentModeKind: this.currentModeKind,
+			isInlineChatV2Enabled: !!this.configurationService.getValue(InlineChatConfigKeys.EnableV2),
+			sessionType: this.getCurrentSessionType(),
+		}, allModels)) {
 			this.setCurrentLanguageModelToDefault();
 		}
 	}
@@ -1016,6 +1099,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		}
 
 		const mode2 = this.chatModeService.findModeById(mode) ??
+			this.chatModeService.findModeByName(mode) ??
 			this.chatModeService.findModeById(ChatModeKind.Agent) ??
 			ChatMode.Ask;
 		this.setChatMode2(mode2, storeSelection);
@@ -1033,56 +1117,29 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		this._syncInputStateToModel();
 	}
 
-	private modelSupportedForDefaultAgent(model: ILanguageModelChatMetadataAndIdentifier): boolean {
-		// Probably this logic could live in configuration on the agent, or somewhere else, if it gets more complex
-		if (this.currentModeKind === ChatModeKind.Agent || (this.currentModeKind === ChatModeKind.Edit && this.configurationService.getValue(ChatConfiguration.Edits2Enabled))) {
-			return ILanguageModelChatMetadata.suitableForAgentMode(model.metadata);
-		}
-
-		return true;
-	}
-
-	private modelSupportedForInlineChat(model: ILanguageModelChatMetadataAndIdentifier): boolean {
-		if (this.location !== ChatAgentLocation.EditorInline || !this.configurationService.getValue(InlineChatConfigKeys.EnableV2)) {
-			return true;
-		}
-		return !!model.metadata.capabilities?.toolCalling;
-	}
-
-	private getModels(): ILanguageModelChatMetadataAndIdentifier[] {
+	/**
+	 * Get all models merged from live and cache, without session/mode filtering.
+	 * This is the canonical source for the full model pool, including cached models
+	 * that bridge startup races when live models haven't loaded yet.
+	 */
+	private getAllMergedModels(): ILanguageModelChatMetadataAndIdentifier[] {
 		const cachedModels = this.storageService.getObject<ILanguageModelChatMetadataAndIdentifier[]>(CachedLanguageModelsKey, StorageScope.APPLICATION, []);
 		const liveModels = this.languageModelsService.getLanguageModelIds()
 			.map(modelId => ({ identifier: modelId, metadata: this.languageModelsService.lookupLanguageModel(modelId)! }));
 
-		// Merge live models with cached models per-vendor. For vendors whose
-		// models have resolved, use the live data. For vendors that are still
-		// contributed but haven't resolved yet (startup race), keep their
-		// cached models. Vendors that are no longer contributed at all (e.g.
-		// extension uninstalled) are evicted from the cache.
-		let models: ILanguageModelChatMetadataAndIdentifier[];
+		const contributedVendors = new Set(this.languageModelsService.getVendors().map(v => v.vendor));
+		const models = mergeModelsWithCache(liveModels, cachedModels, contributedVendors);
 		if (liveModels.length > 0) {
-			const liveVendors = new Set(liveModels.map(m => m.metadata.vendor));
-			const contributedVendors = new Set(this.languageModelsService.getVendors().map(v => v.vendor));
-			models = [
-				...liveModels,
-				...cachedModels.filter(m => !liveVendors.has(m.metadata.vendor) && contributedVendors.has(m.metadata.vendor)),
-			];
 			this.storageService.store(CachedLanguageModelsKey, models, StorageScope.APPLICATION, StorageTarget.MACHINE);
-		} else {
-			models = cachedModels;
 		}
+		return models;
+	}
+
+	private getModels(): ILanguageModelChatMetadataAndIdentifier[] {
+		const models = this.getAllMergedModels();
 		models.sort((a, b) => a.metadata.name.localeCompare(b.metadata.name));
 
-		const sessionType = this.getCurrentSessionType();
-		if (sessionType && sessionType !== AgentSessionProviders.Local) {
-			// Session has a specific chat session type - show only models that target
-			// this session type, if any such models exist.
-			return models.filter(entry => entry.metadata?.targetChatSessionType === sessionType && entry.metadata?.isUserSelectable);
-		}
-
-		// No session type or no targeted models - show general models (those without
-		// a targetChatSessionType) filtered by the standard criteria.
-		return models.filter(entry => !entry.metadata?.targetChatSessionType && entry.metadata?.isUserSelectable && this.modelSupportedForDefaultAgent(entry) && this.modelSupportedForInlineChat(entry));
+		return filterModelsForSession(models, this.getCurrentSessionType(), this.currentModeKind, this.location, !!this.configurationService.getValue(InlineChatConfigKeys.EnableV2));
 	}
 
 	/**
@@ -1096,7 +1153,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		}
 		const sessionResource = this._widget?.viewModel?.model.sessionResource;
 		const ctx = sessionResource ? this.chatService.getChatSessionFromInternalUri(sessionResource) : undefined;
-		return ctx?.chatSessionType;
+		return ctx ? getChatSessionType(ctx.chatSessionResource) : undefined;
 	}
 
 	/**
@@ -1104,28 +1161,11 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	 * This is used to set the context key that controls model picker visibility.
 	 */
 	private hasModelsTargetingSessionType(): boolean {
-		const sessionType = this.getCurrentSessionType();
-		if (!sessionType) {
-			return false;
-		}
-		return this.languageModelsService.getLanguageModelIds().some(modelId => {
-			const metadata = this.languageModelsService.lookupLanguageModel(modelId);
-			return metadata?.targetChatSessionType === sessionType;
-		});
+		return hasModelsTargetingSession(this.getAllMergedModels(), this.getCurrentSessionType());
 	}
 
-	/**
-	 * Check if a model is valid for the current session's model pool.
-	 * If the session has targeted models, the model must target this session type.
-	 * If no models target this session, the model must not have a targetChatSessionType.
-	 */
 	private isModelValidForCurrentSession(model: ILanguageModelChatMetadataAndIdentifier): boolean {
-		if (this.hasModelsTargetingSessionType()) {
-			// Session has targeted models - model must match
-			return model.metadata.targetChatSessionType === this.getCurrentSessionType();
-		}
-		// No targeted models - model must not be session-specific
-		return !model.metadata.targetChatSessionType;
+		return isModelValidForSession(model, this.getAllMergedModels(), this.getCurrentSessionType());
 	}
 
 	/**
@@ -1146,27 +1186,18 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	 * that was last used - providing continuity.
 	 */
 	private preselectModelFromSessionHistory(): void {
-		const sessionResource = this._widget?.viewModel?.model.sessionResource;
-		const ctx = sessionResource ? this.chatService.getChatSessionFromInternalUri(sessionResource) : undefined;
-		const requiresCustomModels = ctx && this.chatSessionsService.requiresCustomModelsForSessionType(ctx.chatSessionType);
-		if (!requiresCustomModels) {
-			return;
-		}
-
 		const requests = this._widget?.viewModel?.model.getRequests();
 		if (!requests || requests.length === 0) {
 			return;
 		}
 
-		// Find the modelId from the last request that has one
-		let lastModelId: string | undefined;
-		for (let i = requests.length - 1; i >= 0; i--) {
-			if (requests[i].modelId) {
-				lastModelId = requests[i].modelId;
-				break;
-			}
+		const modeInfo = findLast(requests, req => !!req.modeInfo)?.modeInfo;
+		if (modeInfo && modeInfo.modeInstructions?.uri) {
+			this.setChatMode(modeInfo.modeInstructions.uri.toString());
 		}
 
+		// Find the modelId from the last request that has one
+		const lastModelId = findLast(requests, req => !!req.modelId)?.modelId;
 		if (!lastModelId) {
 			return;
 		}
@@ -1200,7 +1231,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 	private setCurrentLanguageModelToDefault() {
 		const allModels = this.getModels();
-		const defaultModel = allModels.find(m => m.metadata.isDefaultForLocation[this.location]) || allModels[0];
+		const defaultModel = findDefaultModel(allModels, this.location);
 		if (defaultModel) {
 			this.setCurrentLanguageModel(defaultModel);
 		}
@@ -1220,6 +1251,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			},
 			selectedModel: this._currentLanguageModel.get(),
 			selections: this._inputEditor?.getSelections() || [],
+			permissionLevel: this._currentPermissionLevel.get(),
 			contrib: {},
 		};
 
@@ -1440,6 +1472,8 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			this.history.append(this._getFilteredEntry(userQuery));
 		}
 
+		this.resetScrollbarVisibilityAfterAccept();
+
 		if (this._chatSessionIsEmpty) {
 			this._chatSessionIsEmpty = false;
 			this._emptyInputState.set(undefined, undefined);
@@ -1582,17 +1616,18 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		const ctx = sessionResource ? this.chatService.getChatSessionFromInternalUri(sessionResource) : undefined;
 
 		// Check if this session type has a customAgentTarget
-		const customAgentTarget = ctx && this.chatSessionsService.getCustomAgentTargetForSessionType(ctx.chatSessionType);
+		const customAgentTarget = ctx && this.chatSessionsService.getCustomAgentTargetForSessionType(getChatSessionType(ctx.chatSessionResource));
 		this.chatSessionHasCustomAgentTarget.set(customAgentTarget !== Target.Undefined);
 
 		// Check if this session type requires custom models
-		const requiresCustomModels = ctx && this.chatSessionsService.requiresCustomModelsForSessionType(ctx.chatSessionType);
+		const requiresCustomModels = ctx && this.chatSessionsService.requiresCustomModelsForSessionType(getChatSessionType(ctx.chatSessionResource));
 		this.chatSessionHasTargetedModels.set(!!requiresCustomModels);
 
 		// Handle agent option from session - set initial mode
 		if (customAgentTarget) {
+			const contribution = ctx && this.chatSessionsService.getChatSessionContribution(getChatSessionType(ctx.chatSessionResource));
 			const agentOption = this.chatSessionsService.getSessionOption(ctx.chatSessionResource, agentOptionId);
-			if (typeof agentOption !== 'undefined') {
+			if (typeof agentOption !== 'undefined' && !contribution?.useRequestToPopulateBuiltInPickers) {
 				const agentId = (typeof agentOption === 'string' ? agentOption : agentOption.id) || ChatMode.Agent.id;
 				const currentMode = this._currentModeObservable.get();
 				const isDefaultAgent = agentId === ChatMode.Agent.id;
@@ -1610,7 +1645,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		// - Panel/Editor: Use actual session's type (ctx available)
 		// - Welcome view: Use delegate's type (ctx may not exist yet)
 		const delegateSessionType = this.options.sessionTypePickerDelegate?.getActiveSessionProvider?.();
-		const effectiveSessionType = delegateSessionType ?? ctx?.chatSessionType;
+		const effectiveSessionType = delegateSessionType ?? (ctx ? getChatSessionType(ctx.chatSessionResource) : undefined);
 
 		if (!effectiveSessionType) {
 			setNoOptions();
@@ -1702,7 +1737,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			!Array.from(visibleGroupIds).every(id => currentWidgetGroupIds.has(id));
 
 		if (needsRecreation && this._lastSessionPickerAction && this.chatSessionPickerContainer) {
-			const widgets = this.createChatSessionPickerWidgets(this._lastSessionPickerAction);
+			const widgets = this.createChatSessionPickerWidgets(this._lastSessionPickerAction, this._lastSessionPickerOptions);
 			dom.clearNode(this.chatSessionPickerContainer);
 			for (const widget of widgets) {
 				const container = dom.$('.action-item.chat-sessionPicker-item');
@@ -1794,7 +1829,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	}
 
 	private getEffectiveSessionType(ctx: IChatSessionContext | undefined, delegate: ISessionTypePickerDelegate | undefined): string {
-		return this.options.sessionTypePickerDelegate?.getActiveSessionProvider?.() || ctx?.chatSessionType || '';
+		return this.options.sessionTypePickerDelegate?.getActiveSessionProvider?.() || (ctx && getChatSessionType(ctx.chatSessionResource)) || '';
 	}
 
 	/**
@@ -1811,6 +1846,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		const sessionType = delegateSessionType || (sessionResource ? getChatSessionType(sessionResource) : '');
 
 		this.agentSessionTypeKey.set(sessionType);
+		this.chatSessionSupportsDelegationKey.set(this.chatSessionsService.supportsDelegationForSessionType(sessionType));
 	}
 
 	/**
@@ -1910,7 +1946,16 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			this.refreshChatSessionPickers();
 			this.tryUpdateWidgetController();
 			this.updateContextUsageWidget();
-			if (this._currentQuestionCarouselSessionResource && (!e.currentSessionResource || !isEqual(this._currentQuestionCarouselSessionResource, e.currentSessionResource))) {
+			let hasMatchingResource = false;
+			if (e.currentSessionResource) {
+				for (const r of this._questionCarouselSessionResources.values()) {
+					if (isEqual(r, e.currentSessionResource)) {
+						hasMatchingResource = true;
+						break;
+					}
+				}
+			}
+			if (this._questionCarouselSessionResources.size > 0 && (!e.currentSessionResource || !hasMatchingResource)) {
 				this.clearQuestionCarousel();
 			}
 
@@ -1918,13 +1963,11 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			// when the session type changes (different session types may have
 			// different model pools via targetChatSessionType).
 			const newSessionType = this.getCurrentSessionType();
-			if (newSessionType !== this._currentSessionType) {
+			if (e.currentSessionResource && newSessionType !== this._currentSessionType) {
 				this._currentSessionType = newSessionType;
 				this.initSelectedModel();
+				this.checkModelInSessionPool();
 			}
-
-			// Validate that the current model belongs to the new session's pool
-			this.checkModelInSessionPool();
 
 			// For contributed sessions with history, pre-select the model
 			// from the last request so the user resumes with the same model.
@@ -1938,15 +1981,17 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 					dom.h('.chat-question-carousel-widget-container@chatQuestionCarouselContainer'),
 					dom.h('.chat-input-widgets-container@chatInputWidgetsContainer'),
 					dom.h('.chat-todo-list-widget-container@chatInputTodoListWidgetContainer'),
+					dom.h('.chat-artifacts-widget-container@chatArtifactsWidgetContainer'),
 					dom.h('.chat-editing-session@chatEditingSessionWidgetContainer'),
 					dom.h('.chat-getting-started-tip-container@chatGettingStartedTipContainer'),
 					dom.h('.interactive-input-and-side-toolbar@inputAndSideToolbar', [
 						dom.h('.chat-input-container@inputContainer', [
 							dom.h('.chat-editor-container@editorContainer'),
-							dom.h('.chat-input-toolbars@inputToolbars', [
-								dom.h('.chat-context-usage-container@contextUsageWidgetContainer'),
-							]),
+							dom.h('.chat-input-toolbars@inputToolbars'),
 						]),
+					]),
+					dom.h('.chat-secondary-toolbar@secondaryToolbar', [
+						dom.h('.chat-context-usage-container@contextUsageWidgetContainer'),
 					]),
 					dom.h('.chat-attachments-container@attachmentsContainer', [
 						dom.h('.chat-attached-context@attachedContextContainer'),
@@ -1960,6 +2005,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 				dom.h('.interactive-input-followups@followupsContainer'),
 				dom.h('.chat-input-widgets-container@chatInputWidgetsContainer'),
 				dom.h('.chat-todo-list-widget-container@chatInputTodoListWidgetContainer'),
+				dom.h('.chat-artifacts-widget-container@chatArtifactsWidgetContainer'),
 				dom.h('.chat-editing-session@chatEditingSessionWidgetContainer'),
 				dom.h('.chat-getting-started-tip-container@chatGettingStartedTipContainer'),
 				dom.h('.interactive-input-and-side-toolbar@inputAndSideToolbar', [
@@ -1968,10 +2014,11 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 							dom.h('.chat-attached-context@attachedContextContainer'),
 						]),
 						dom.h('.chat-editor-container@editorContainer'),
-						dom.h('.chat-input-toolbars@inputToolbars', [
-							dom.h('.chat-context-usage-container@contextUsageWidgetContainer'),
-						]),
+						dom.h('.chat-input-toolbars@inputToolbars'),
 					]),
+				]),
+				dom.h('.chat-secondary-toolbar@secondaryToolbar', [
+					dom.h('.chat-context-usage-container@contextUsageWidgetContainer'),
 				]),
 			]);
 		}
@@ -1993,13 +2040,22 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		this.attachmentsContainer = elements.attachmentsContainer;
 		this.attachedContextContainer = elements.attachedContextContainer;
 		const toolbarsContainer = elements.inputToolbars;
+		this.secondaryToolbarContainer = elements.secondaryToolbar;
+		if (this.options.renderStyle === 'compact') {
+			this.secondaryToolbarContainer.style.display = 'none';
+		}
 		this.chatEditingSessionWidgetContainer = elements.chatEditingSessionWidgetContainer;
 		this.chatInputTodoListWidgetContainer = elements.chatInputTodoListWidgetContainer;
+		this.chatArtifactsWidgetContainer = elements.chatArtifactsWidgetContainer;
 		this.chatGettingStartedTipContainer = elements.chatGettingStartedTipContainer;
 		this.chatGettingStartedTipContainer.style.display = 'none';
 		this.chatQuestionCarouselContainer = elements.chatQuestionCarouselContainer;
 		this.chatInputWidgetsContainer = elements.chatInputWidgetsContainer;
 		this.contextUsageWidgetContainer = elements.contextUsageWidgetContainer;
+
+		if (this.options.isSessionsWindow || this.options.renderStyle === 'compact') {
+			toolbarsContainer.prepend(this.contextUsageWidgetContainer);
+		}
 
 		// Context usage widget — will be positioned in the toolbar after toolbars are created
 		this.contextUsageWidget = this._register(this.instantiationService.createInstance(ChatContextUsageWidget));
@@ -2050,8 +2106,8 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		options.ariaLabel = this._getAriaLabel();
 		options.fontFamily = DEFAULT_FONT_FAMILY;
 		options.fontSize = 13;
-		options.lineHeight = 20;
-		options.padding = this.options.renderStyle === 'compact' ? { top: 2, bottom: 2 } : { top: 8, bottom: 8 };
+		options.lineHeight = INPUT_EDITOR_LINE_HEIGHT;
+		options.padding = this.options.renderStyle === 'compact' ? INPUT_EDITOR_PADDING.compact : INPUT_EDITOR_PADDING.default;
 		options.cursorWidth = 1;
 		options.wrappingStrategy = 'advanced';
 		options.bracketPairColorization = { enabled: false };
@@ -2066,7 +2122,13 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			showStatusBar: false,
 			insertMode: 'insert',
 		};
-		options.scrollbar = { ...(options.scrollbar ?? {}), vertical: 'hidden' };
+		options.scrollbar = this.options.renderStyle === 'compact'
+			? { ...(options.scrollbar ?? {}), vertical: 'hidden' }
+			: {
+				...(options.scrollbar ?? {}),
+				vertical: 'auto',
+				verticalScrollbarSize: 7,
+			};
 		options.stickyScroll = { enabled: false };
 
 		this._inputEditorElement = dom.append(editorContainer, $(chatInputEditorContainerSelector));
@@ -2097,7 +2159,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		}));
 
 		this._register(this._inputEditor.onDidChangeModelContent(() => {
-			const currentHeight = Math.min(this._inputEditor.getContentHeight(), this.inputEditorMaxHeight);
+			const currentHeight = Math.min(this._inputEditor.getContentHeight(), this._effectiveInputEditorMaxHeight);
 			if (currentHeight !== this.inputEditorHeight) {
 				this.inputEditorHeight = currentHeight;
 				// Directly update editor layout - ResizeObserver will notify parent about height change
@@ -2145,10 +2207,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		const pickerOptions: IChatInputPickerOptions = {
 			getOverflowAnchor: () => this.inputActionsToolbar.getElement(),
 			actionContext: { widget },
-			onlyShowIconsForDefaultActions: observableFromEvent(
-				this._inputEditor.onDidLayoutChange,
-				(l?: EditorLayoutInfo) => (l?.width ?? this._inputEditor.getLayoutInfo().width) < 650 /* This is a magical number based on testing*/
-			).recomputeInitiallyAndOnChange(this._store),
+			hideChevrons: derived(reader => this._stableInputPartWidth.read(reader) < CHAT_INPUT_PICKER_COLLAPSE_WIDTH),
 			hoverPosition: {
 				forcePosition: true,
 				hoverPosition: location === ChatWidgetLocation.SidebarRight && !isMaximized ? HoverPosition.LEFT : HoverPosition.RIGHT
@@ -2157,6 +2216,10 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 		this._register(dom.addStandardDisposableListener(toolbarsContainer, dom.EventType.CLICK, e => this.inputEditor.focus()));
 		this._register(dom.addStandardDisposableListener(this.attachmentsContainer, dom.EventType.CLICK, e => this.inputEditor.focus()));
+		const shorterChatInputActionIds = new Set<string>([
+			OpenModePickerAction.ID,
+			ConfigureToolsAction.ID,
+		]);
 		this.inputActionsToolbar = this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, this.options.renderInputToolbarBelowInput ? this.attachmentsContainer : toolbarsContainer, MenuId.ChatInput, {
 			telemetrySource: this.options.menus.telemetrySource,
 			menuOptions: { shouldForwardArgs: true },
@@ -2166,7 +2229,8 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 				enabled: true,
 				kind: 'last',
 				minItems: 1,
-				actionMinWidth: 40
+				actionMinWidth: 48,
+				getActionMinWidth: action => shorterChatInputActionIds.has(action.id) ? 22 : undefined,
 			},
 			actionViewItemProvider: (action, options) => {
 				if (action.id === OpenModelPickerAction.ID && action instanceof MenuItemAction) {
@@ -2182,10 +2246,22 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 							this.renderAttachedContext();
 						},
 						getModels: () => this.getModels(),
-						canManageModels: () => {
+						useGroupedModelPicker: () => {
 							const sessionType = this.getCurrentSessionType();
 							return !sessionType || sessionType === localChatSessionType;
-						}
+						},
+						showManageModelsAction: () => {
+							const sessionType = this.getCurrentSessionType();
+							return !sessionType || sessionType === localChatSessionType;
+						},
+						showUnavailableFeatured: () => {
+							const sessionType = this.getCurrentSessionType();
+							return !sessionType || sessionType === localChatSessionType;
+						},
+						showFeatured: () => {
+							const sessionType = this.getCurrentSessionType();
+							return !sessionType || sessionType === localChatSessionType;
+						},
 					};
 					return this.modelWidget = this.instantiationService.createInstance(EnhancedModelPickerActionItem, action, itemDelegate, pickerOptions);
 				} else if (action.id === OpenModePickerAction.ID && action instanceof MenuItemAction) {
@@ -2195,7 +2271,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 						customAgentTarget: () => {
 							const sessionResource = this._widget?.viewModel?.model.sessionResource;
 							const ctx = sessionResource && this.chatService.getChatSessionFromInternalUri(sessionResource);
-							return (ctx && this.chatSessionsService.getCustomAgentTargetForSessionType(ctx.chatSessionType)) ?? Target.Undefined;
+							return (ctx && this.chatSessionsService.getCustomAgentTargetForSessionType(getChatSessionType(ctx.chatSessionResource))) ?? Target.Undefined;
 						},
 					};
 					return this.modeWidget = this.instantiationService.createInstance(ModePickerActionItem, action, delegate, pickerOptions);
@@ -2203,7 +2279,107 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 					// Use provided delegate if available, otherwise create default delegate
 					const getActiveSessionType = () => {
 						const sessionResource = this._widget?.viewModel?.sessionResource;
-						return sessionResource ? getAgentSessionProvider(sessionResource) : undefined;
+						// TODO: Remove hardcoded providers from core
+						return sessionResource ? (getAgentSessionProvider(sessionResource) ?? getChatSessionType(sessionResource)) : undefined;
+					};
+					const delegate: ISessionTypePickerDelegate = this.options.sessionTypePickerDelegate ?? {
+						getActiveSessionProvider: () => {
+							return getActiveSessionType();
+						},
+						getPendingDelegationTarget: () => {
+							return this._pendingDelegationTarget;
+						},
+						setPendingDelegationTarget: (provider: AgentSessionProviders) => {
+							const isActive = getActiveSessionType() === provider;
+							this._pendingDelegationTarget = isActive ? undefined : provider;
+							this.updateWidgetLockStateFromSessionType(provider);
+							this.updateAgentSessionTypeContextKey();
+							this.refreshChatSessionPickers();
+						},
+					};
+					const isWelcomeViewMode = !!this.options.sessionTypePickerDelegate?.setActiveSessionProvider;
+					const Picker = (action.id === OpenSessionTargetPickerAction.ID || isWelcomeViewMode) ? SessionTypePickerActionItem : DelegationSessionPickerActionItem;
+					return this.sessionTargetWidget = this.instantiationService.createInstance(Picker, action, location === ChatWidgetLocation.Editor ? 'editor' : 'sidebar', delegate, pickerOptions);
+				} else if (action.id === OpenWorkspacePickerAction.ID && action instanceof MenuItemAction) {
+					if (this.workspaceContextService.getWorkbenchState() === WorkbenchState.EMPTY && this.options.workspacePickerDelegate) {
+						return this.instantiationService.createInstance(WorkspacePickerActionItem, action, this.options.workspacePickerDelegate, pickerOptions);
+					} else {
+						return new HiddenActionViewItem(action);
+					}
+				} else if (action.id === ChatSessionPrimaryPickerAction.ID && action instanceof MenuItemAction) {
+					// Create all pickers and return a container action view item
+					const widgets = this.createChatSessionPickerWidgets(action, pickerOptions);
+					if (widgets.length === 0) {
+						return new HiddenActionViewItem(action);
+					}
+					// Create a container to hold all picker widgets
+					return this.instantiationService.createInstance(ChatSessionPickersContainerActionItem, action, widgets);
+				}
+				return undefined;
+			}
+		}));
+		this.inputActionsToolbar.getElement().classList.add('chat-input-toolbar');
+		this.inputActionsToolbar.context = { widget } satisfies IChatExecuteActionContext;
+		this._register(this.inputActionsToolbar.onDidChangeMenuItems(() => {
+			// Update container reference for the pickers
+			const toolbarElement = this.inputActionsToolbar.getElement();
+			// eslint-disable-next-line no-restricted-syntax
+			const container = toolbarElement.querySelector('.chat-sessionPicker-container');
+			this.chatSessionPickerContainer = container as HTMLElement | undefined;
+			if (this.cachedWidth && typeof this.cachedInputToolbarWidth === 'number' && this.cachedInputToolbarWidth !== this.inputActionsToolbar.getItemsWidth()) {
+				this._toolbarRelayoutScheduler.schedule();
+			}
+		}));
+		// When hideChevrons changes, picker items change their rendered size
+		// but the toolbar's ResizeObserver won't fire (the toolbar element size
+		// didn't change, only its children did). Force a relayout so the
+		// responsive overflow logic re-evaluates with the correct item widths.
+		// The relayout is deferred by a microtask so the picker action view
+		// items' own autoruns have a chance to re-render their labels first.
+		this._register(autorun(reader => {
+			pickerOptions.hideChevrons.read(reader);
+			queueMicrotask(() => this.inputActionsToolbar.relayout());
+		}));
+		this.executeToolbar = this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, toolbarsContainer, this.options.menus.executeToolbar, {
+			telemetrySource: this.options.menus.telemetrySource,
+			menuOptions: {
+				shouldForwardArgs: true
+			},
+			hoverDelegate,
+			hiddenItemStrategy: HiddenItemStrategy.NoHide,
+		}));
+		this.executeToolbar.getElement().classList.add('chat-execute-toolbar');
+		this.executeToolbar.context = { widget } satisfies IChatExecuteActionContext;
+		this._register(this.executeToolbar.onDidChangeMenuItems(() => {
+			if (this.cachedWidth && typeof this.cachedExecuteToolbarWidth === 'number' && this.cachedExecuteToolbarWidth !== this.executeToolbar.getItemsWidth()) {
+				this._toolbarRelayoutScheduler.schedule();
+			}
+		}));
+		if (this.options.menus.inputSideToolbar) {
+			const toolbarSide = this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, inputAndSideToolbar, this.options.menus.inputSideToolbar, {
+				telemetrySource: this.options.menus.telemetrySource,
+				menuOptions: {
+					shouldForwardArgs: true
+				},
+				hoverDelegate
+			}));
+			this.inputSideToolbarContainer = toolbarSide.getElement();
+			toolbarSide.getElement().classList.add('chat-side-toolbar');
+			toolbarSide.context = { widget } satisfies IChatExecuteActionContext;
+		}
+
+		// Secondary toolbar (permissions) — below the input box
+		this.secondaryToolbar = this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, this.secondaryToolbarContainer, MenuId.ChatInputSecondary, {
+			telemetrySource: this.options.menus.telemetrySource,
+			menuOptions: { shouldForwardArgs: true },
+			hiddenItemStrategy: HiddenItemStrategy.NoHide,
+			hoverDelegate,
+			actionViewItemProvider: (action, options) => {
+				if ((action.id === OpenSessionTargetPickerAction.ID || action.id === OpenDelegationPickerAction.ID) && action instanceof MenuItemAction) {
+					const getActiveSessionType = () => {
+						const sessionResource = this._widget?.viewModel?.sessionResource;
+						// TODO: Remove hardcoded providers from core
+						return sessionResource ? (getAgentSessionProvider(sessionResource) ?? getChatSessionType(sessionResource)) : undefined;
 					};
 					const delegate: ISessionTypePickerDelegate = this.options.sessionTypePickerDelegate ?? {
 						getActiveSessionProvider: () => {
@@ -2233,58 +2409,20 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 						}
 						return empty;
 					}
-				} else if (action.id === ChatSessionPrimaryPickerAction.ID && action instanceof MenuItemAction) {
-					// Create all pickers and return a container action view item
-					const widgets = this.createChatSessionPickerWidgets(action);
-					if (widgets.length === 0) {
-						return undefined;
-					}
-					// Create a container to hold all picker widgets
-					return this.instantiationService.createInstance(ChatSessionPickersContainerActionItem, action, widgets);
+				} else if (action.id === OpenPermissionPickerAction.ID && action instanceof MenuItemAction) {
+					const delegate: IPermissionPickerDelegate = {
+						currentPermissionLevel: this._currentPermissionLevel,
+						setPermissionLevel: (level: ChatPermissionLevel) => {
+							this.setPermissionLevel(level);
+						},
+					};
+					return this.permissionWidget = this.instantiationService.createInstance(PermissionPickerActionItem, action, delegate, pickerOptions);
 				}
 				return undefined;
 			}
 		}));
-		this.inputActionsToolbar.getElement().classList.add('chat-input-toolbar');
-		this.inputActionsToolbar.context = { widget } satisfies IChatExecuteActionContext;
-		this._register(this.inputActionsToolbar.onDidChangeMenuItems(() => {
-			// Update container reference for the pickers
-			const toolbarElement = this.inputActionsToolbar.getElement();
-			// eslint-disable-next-line no-restricted-syntax
-			const container = toolbarElement.querySelector('.chat-sessionPicker-container');
-			this.chatSessionPickerContainer = container as HTMLElement | undefined;
-
-			if (this.cachedWidth && typeof this.cachedInputToolbarWidth === 'number' && this.cachedInputToolbarWidth !== this.inputActionsToolbar.getItemsWidth()) {
-				this.layout(this.cachedWidth);
-			}
-		}));
-		this.executeToolbar = this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, toolbarsContainer, this.options.menus.executeToolbar, {
-			telemetrySource: this.options.menus.telemetrySource,
-			menuOptions: {
-				shouldForwardArgs: true
-			},
-			hoverDelegate,
-			hiddenItemStrategy: HiddenItemStrategy.NoHide,
-		}));
-		this.executeToolbar.getElement().classList.add('chat-execute-toolbar');
-		this.executeToolbar.context = { widget } satisfies IChatExecuteActionContext;
-		this._register(this.executeToolbar.onDidChangeMenuItems(() => {
-			if (this.cachedWidth && typeof this.cachedExecuteToolbarWidth === 'number' && this.cachedExecuteToolbarWidth !== this.executeToolbar.getItemsWidth()) {
-				this.layout(this.cachedWidth);
-			}
-		}));
-		if (this.options.menus.inputSideToolbar) {
-			const toolbarSide = this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, inputAndSideToolbar, this.options.menus.inputSideToolbar, {
-				telemetrySource: this.options.menus.telemetrySource,
-				menuOptions: {
-					shouldForwardArgs: true
-				},
-				hoverDelegate
-			}));
-			this.inputSideToolbarContainer = toolbarSide.getElement();
-			toolbarSide.getElement().classList.add('chat-side-toolbar');
-			toolbarSide.context = { widget } satisfies IChatExecuteActionContext;
-		}
+		this.secondaryToolbar.getElement().classList.add('chat-secondary-input-toolbar');
+		this.secondaryToolbar.context = { widget } satisfies IChatExecuteActionContext;
 
 		let inputModel = this.modelService.getModel(this.inputUri);
 		if (!inputModel) {
@@ -2575,62 +2713,94 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		this._chatInputTodoListWidget.value?.clear(sessionResource, force);
 	}
 
-	renderQuestionCarousel(carousel: IChatQuestionCarousel, context: IChatContentPartRenderContext, options: IChatQuestionCarouselOptions): ChatQuestionCarouselPart {
-
-		if (this._chatQuestionCarouselWidget.value) {
-			const existingCarousel = this._chatQuestionCarouselWidget.value;
-			const existingResolveId = existingCarousel.carousel.resolveId;
-			if (existingResolveId && carousel.resolveId && existingResolveId === carousel.resolveId) {
-				return existingCarousel;
-			}
-
-			// Complete the old carousel's completion promise as skipped before clearing
-			// This prevents the askQuestions tool from hanging when parallel subagents invoke it
-			const oldCarousel = existingCarousel.carousel;
-			if (oldCarousel instanceof ChatQuestionCarouselData && !oldCarousel.completion.isSettled) {
-				oldCarousel.completion.complete({ answers: undefined });
-			}
-
-			this.clearQuestionCarousel();
+	renderArtifactsWidget(chatSessionResource: URI): void {
+		if (!this.configurationService.getValue<boolean>(ChatConfiguration.ArtifactsEnabled)) {
+			return;
 		}
 
-		// track the response id and session
-		this._currentQuestionCarouselResponseId = isResponseVM(context.element) ? context.element.requestId : undefined;
-		this._currentQuestionCarouselSessionResource = isResponseVM(context.element) ? context.element.sessionResource : undefined;
+		if (!this._chatArtifactsWidget.value) {
+			const widget = this._register(this.instantiationService.createInstance(ChatArtifactsWidget));
+			this._chatArtifactsWidget.value = widget;
+			dom.clearNode(this.chatArtifactsWidgetContainer);
+			dom.append(this.chatArtifactsWidgetContainer, widget.domNode);
+		}
+		this._chatArtifactsWidget.value.render(chatSessionResource);
+	}
 
-		const part = this._chatQuestionCarouselDisposables.add(
-			this.instantiationService.createInstance(ChatQuestionCarouselPart, carousel, context, options)
-		);
-		this._chatQuestionCarouselWidget.value = part;
+	clearArtifactsWidget(): void {
+		this._chatArtifactsWidget.value?.hide();
+	}
+
+	renderQuestionCarousel(carousel: IChatQuestionCarousel, context: IChatContentPartRenderContext, options: IChatQuestionCarouselOptions): ChatQuestionCarouselPart {
+
+		const carouselKey = carousel.resolveId ?? `${isResponseVM(context.element) ? context.element.requestId : ''}_${context.contentIndex}`;
+
+		// If a carousel with the same key already exists, return it
+		const existing = this._chatQuestionCarouselWidgets.get(carouselKey);
+		if (existing) {
+			return existing;
+		}
+
+		// Track the response id and session for this carousel
+		if (isResponseVM(context.element)) {
+			this._questionCarouselResponseIds.set(carouselKey, context.element.requestId);
+			this._questionCarouselSessionResources.set(carouselKey, context.element.sessionResource);
+		}
+
+		const part = this.instantiationService.createInstance(ChatQuestionCarouselPart, carousel, context, options);
+		this._chatQuestionCarouselWidgets.set(carouselKey, part);
 		this._hasQuestionCarouselContextKey?.set(true);
 
-		dom.clearNode(this.chatQuestionCarouselContainer);
 		dom.append(this.chatQuestionCarouselContainer, part.domNode);
 
 		return part;
 	}
 
-	clearQuestionCarousel(responseId?: string): void {
-		if (responseId && this._currentQuestionCarouselResponseId !== responseId) {
-			return;
+	clearQuestionCarousel(responseId?: string, resolveId?: string): void {
+		if (resolveId !== undefined) {
+			// Remove a specific carousel by resolveId
+			const part = this._chatQuestionCarouselWidgets.get(resolveId);
+			if (part) {
+				part.domNode.remove();
+				this._chatQuestionCarouselWidgets.deleteAndDispose(resolveId);
+			}
+			this._questionCarouselResponseIds.delete(resolveId);
+			this._questionCarouselSessionResources.delete(resolveId);
+		} else if (responseId !== undefined) {
+			// Remove all carousels associated with a given responseId
+			for (const [key, rid] of this._questionCarouselResponseIds) {
+				if (rid === responseId) {
+					const part = this._chatQuestionCarouselWidgets.get(key);
+					if (part) {
+						part.domNode.remove();
+						this._chatQuestionCarouselWidgets.deleteAndDispose(key);
+					}
+					this._questionCarouselResponseIds.delete(key);
+					this._questionCarouselSessionResources.delete(key);
+				}
+			}
+		} else {
+			// Clear all carousels
+			this._chatQuestionCarouselWidgets.clearAndDisposeAll();
+			this._questionCarouselResponseIds.clear();
+			this._questionCarouselSessionResources.clear();
+			dom.clearNode(this.chatQuestionCarouselContainer);
 		}
-		this._chatQuestionCarouselDisposables.clear();
-		this._chatQuestionCarouselWidget.clear();
-		this._currentQuestionCarouselResponseId = undefined;
-		this._currentQuestionCarouselSessionResource = undefined;
-		this._hasQuestionCarouselContextKey?.set(false);
-		dom.clearNode(this.chatQuestionCarouselContainer);
-	}
-	get questionCarouselResponseId(): string | undefined {
-		return this._currentQuestionCarouselResponseId;
+		this._hasQuestionCarouselContextKey?.set(this._chatQuestionCarouselWidgets.size > 0);
 	}
 
 	get questionCarousel(): ChatQuestionCarouselPart | undefined {
-		return this._chatQuestionCarouselWidget.value;
+		// Return the focused carousel, or the first one
+		for (const part of this._chatQuestionCarouselWidgets.values()) {
+			if (part.hasFocus()) {
+				return part;
+			}
+		}
+		return this._chatQuestionCarouselWidgets.size > 0 ? this._chatQuestionCarouselWidgets.values().next().value : undefined;
 	}
 
 	focusQuestionCarousel(): boolean {
-		const carousel = this._chatQuestionCarouselWidget.value;
+		const carousel = this.questionCarousel;
 		if (carousel) {
 			carousel.focus();
 			return true;
@@ -2639,17 +2809,21 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	}
 
 	isQuestionCarouselFocused(): boolean {
-		const carousel = this._chatQuestionCarouselWidget.value;
-		return carousel?.hasFocus() ?? false;
+		for (const part of this._chatQuestionCarouselWidgets.values()) {
+			if (part.hasFocus()) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	navigateToPreviousQuestion(): boolean {
-		const carousel = this._chatQuestionCarouselWidget.value;
+		const carousel = this.questionCarousel;
 		return carousel?.navigateToPreviousQuestion() ?? false;
 	}
 
 	navigateToNextQuestion(): boolean {
-		const carousel = this._chatQuestionCarouselWidget.value;
+		const carousel = this.questionCarousel;
 		return carousel?.navigateToNextQuestion() ?? false;
 	}
 
@@ -2986,13 +3160,36 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	}
 
 	/**
+	 * Sets the maximum height budget for the input part. The editor height will be
+	 * clamped so it does not grow beyond what this budget allows after accounting
+	 * for non-editor chrome such as attachments, toolbars, and widgets.
+	 */
+	setMaxHeight(maxHeight: number | undefined): void {
+		this._maxHeight = maxHeight;
+	}
+
+	/**
 	 * Layout the input part with the given width. Height is intrinsic - determined by content
 	 * and detected via ResizeObserver, which updates `inputPartHeight` for the parent to observe.
 	 */
 	layout(width: number) {
 		this.cachedWidth = width;
+		this._stableInputPartWidth.set(width, undefined);
 
 		return this._layout(width);
+	}
+
+	private get _effectiveInputEditorMaxHeight(): number {
+		if (this._maxHeight === undefined) {
+			return this.inputEditorMaxHeight;
+		}
+
+		// Compute non-editor height from the cached container height (updated by ResizeObserver)
+		// minus the current editor height. This avoids a forced reflow from reading offsetHeight.
+		const currentEditorHeight = this.previousInputEditorDimension?.height ?? 0;
+		const nonEditorHeight = Math.max(0, this.height.get() - currentEditorHeight);
+		const budgetForEditor = this._maxHeight - nonEditorHeight;
+		return Math.min(this.inputEditorMaxHeight, Math.max(0, budgetForEditor));
 	}
 
 	private previousInputEditorDimension: IDimension | undefined;
@@ -3004,7 +3201,9 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 		const initialEditorScrollWidth = this._inputEditor.getScrollWidth();
 		const newEditorWidth = width - data.inputPartHorizontalPadding - data.editorBorder - data.inputPartHorizontalPaddingInside - data.toolbarsWidth - data.sideToolbarWidth;
-		const inputEditorHeight = Math.min(this._inputEditor.getContentHeight(), this.inputEditorMaxHeight);
+		const effectiveMaxHeight = this._effectiveInputEditorMaxHeight;
+		const clampedContentHeight = Math.min(this._inputEditor.getContentHeight(), effectiveMaxHeight);
+		const inputEditorHeight = this.inputEditorMinHeight ? Math.min(Math.max(this.inputEditorMinHeight, clampedContentHeight), effectiveMaxHeight) : clampedContentHeight;
 		const newDimension = { width: newEditorWidth, height: inputEditorHeight };
 		if (!this.previousInputEditorDimension || (this.previousInputEditorDimension.width !== newDimension.width || this.previousInputEditorDimension.height !== newDimension.height)) {
 			// This layout call has side-effects that are hard to understand. eg if we are calling this inside a onDidChangeContent handler, this can trigger the next onDidChangeContent handler
@@ -3034,10 +3233,11 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		const inputSideToolbarWidth = this.inputSideToolbarContainer ? dom.getTotalWidth(this.inputSideToolbarContainer) : 0;
 
 		const getToolbarsWidthCompact = () => {
+			const toolbarItemGap = 4;
 			const executeToolbarWidth = this.cachedExecuteToolbarWidth = this.executeToolbar.getItemsWidth();
 			const inputToolbarWidth = this.cachedInputToolbarWidth = this.inputActionsToolbar.getItemsWidth();
-			const executeToolbarPadding = (this.executeToolbar.getItemsLength() - 1) * 4;
-			const inputToolbarPadding = this.inputActionsToolbar.getItemsLength() ? (this.inputActionsToolbar.getItemsLength() - 1) * 4 : 0;
+			const executeToolbarPadding = (this.executeToolbar.getItemsLength() - 1) * toolbarItemGap;
+			const inputToolbarPadding = this.inputActionsToolbar.getItemsLength() ? (this.inputActionsToolbar.getItemsLength() - 1) * toolbarItemGap : 0;
 			const contextUsageWidth = dom.getTotalWidth(this.contextUsageWidgetContainer);
 			const inputToolbarsPadding = 12; // pdading between input toolbar/execute toolbar/contextUsage.
 			return executeToolbarWidth + executeToolbarPadding + contextUsageWidth + (this.options.renderInputToolbarBelowInput ? 0 : inputToolbarWidth + inputToolbarPadding + inputToolbarsPadding);
@@ -3045,8 +3245,8 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 		return {
 			editorBorder: 2,
-			inputPartHorizontalPadding: this.options.renderStyle === 'compact' ? 16 : 32,
-			inputPartHorizontalPaddingInside: 12,
+			inputPartHorizontalPadding: this.options.renderStyle === 'compact' ? 16 : 24,
+			inputPartHorizontalPaddingInside: this.options.renderStyle === 'compact' ? 12 : 10,
 			toolbarsWidth: this.options.renderStyle === 'compact' ? getToolbarsWidthCompact() : 0,
 			sideToolbarWidth: inputSideToolbarWidth > 0 ? inputSideToolbarWidth + 4 /*gap*/ : 0,
 		};
@@ -3092,6 +3292,42 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		// Fallback for unknown contexts
 		return { location: ChatWidgetLocation.Editor, isMaximized: false };
 	}
+
+	private getDefaultScrollbarOptions(): IEditorScrollbarOptions {
+		const scrollbar = this._inputEditor.getRawOptions().scrollbar ?? {};
+		return this.options.renderStyle === 'compact'
+			? { ...scrollbar, vertical: 'hidden' }
+			: { ...scrollbar, vertical: 'auto', verticalScrollbarSize: 7 };
+	}
+
+	private getVisibleScrollbarOptions(): IEditorScrollbarOptions {
+		const scrollbar = this._inputEditor.getRawOptions().scrollbar ?? {};
+		return this.options.renderStyle === 'compact'
+			? { ...scrollbar, vertical: 'hidden' }
+			: { ...scrollbar, vertical: 'visible', verticalScrollbarSize: 7 };
+	}
+
+	private updateInputEditorScrollbarOptions(): void {
+		this._inputEditor.updateOptions({
+			scrollbar: this._forceVisibleScrollbarUntilAccept
+				? this.getVisibleScrollbarOptions()
+				: this.getDefaultScrollbarOptions()
+		});
+	}
+
+	showScrollbarUntilAccept(): void {
+		this._forceVisibleScrollbarUntilAccept = true;
+		this.updateInputEditorScrollbarOptions();
+	}
+
+	private resetScrollbarVisibilityAfterAccept(): void {
+		if (!this._forceVisibleScrollbarUntilAccept) {
+			return;
+		}
+
+		this._forceVisibleScrollbarUntilAccept = false;
+		this.updateInputEditorScrollbarOptions();
+	}
 }
 
 
@@ -3127,5 +3363,16 @@ class ChatSessionPickersContainerActionItem extends ActionViewItem {
 			widget.dispose();
 		}
 		super.dispose();
+	}
+}
+
+class HiddenActionViewItem extends BaseActionViewItem {
+	constructor(action: IAction) {
+		super(undefined, action);
+	}
+
+	override render(container: HTMLElement): void {
+		super.render(container);
+		container.style.display = 'none';
 	}
 }

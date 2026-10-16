@@ -6,14 +6,12 @@
 /* Container - button style hover */
 .command-center .agent-sessions-titlebar-container {
 	display: flex;
-	width: 38vw;
-	max-width: 600px;
-	display: flex;
+	width: 100%;
 	flex-direction: row;
 	flex-wrap: nowrap;
 	align-items: center;
-	justify-content: center;
-	padding: 0 10px;
+	justify-content: flex-start;
+	padding-left: 16px;
 	height: 22px;
 	border-radius: 4px;
 	-webkit-app-region: no-drag;
@@ -30,26 +28,11 @@
 	padding: 0 4px;
 	border-radius: 4px;
 	min-width: 0;
+	max-width: 600px;
 }
 
 .command-center .agent-sessions-titlebar-container .agent-sessions-titlebar-pill:hover {
 	background-color: var(--vscode-toolbar-hoverBackground);
-}
-
-/* Session title actions toolbar */
-.command-center .agent-sessions-titlebar-container .agent-sessions-titlebar-actions {
-	display: flex;
-	align-items: center;
-	flex-shrink: 0;
-}
-
-.command-center .agent-sessions-titlebar-container .agent-sessions-titlebar-actions .actions-container {
-	height: auto;
-}
-
-.command-center .agent-sessions-titlebar-container .agent-sessions-titlebar-actions .action-item {
-	display: flex;
-	align-items: center;
 }
 
 .command-center .agent-sessions-titlebar-container:focus {
@@ -63,11 +46,9 @@
 	align-items: center;
 	gap: 6px;
 	min-width: 0;
-	justify-content: center;
+	justify-content: flex-start;
 	cursor: pointer;
 }
-
-/* Kind icon */
 .command-center .agent-sessions-titlebar-container .agent-sessions-titlebar-icon {
 	display: flex;
 	align-items: center;
@@ -95,3 +76,51 @@
 	opacity: 0.5;
 	flex-shrink: 0;
 }
+
+/* Provider label (shown for untitled sessions) */
+.command-center .agent-sessions-titlebar-container .agent-sessions-titlebar-provider {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	opacity: 0.7;
+}
+
+/* Provider label (shown for untitled sessions) */
+.command-center .agent-sessions-titlebar-container .agent-sessions-titlebar-provider {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	opacity: 0.7;
+}
+
+/* Session count widget (tasklist icon + unread count, left of pill) */
+.command-center .agent-sessions-titlebar-container .agent-sessions-titlebar-count {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	flex-shrink: 0;
+	cursor: pointer;
+	padding: 0 4px;
+	height: 22px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	outline: none;
+}
+
+.command-center .agent-sessions-titlebar-container .agent-sessions-titlebar-count:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.command-center .agent-sessions-titlebar-container .agent-sessions-titlebar-count .codicon {
+	font-size: 16px;
+}
+
+.command-center .agent-sessions-titlebar-container .agent-sessions-titlebar-count-label {
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	line-height: 16px;
+}
+

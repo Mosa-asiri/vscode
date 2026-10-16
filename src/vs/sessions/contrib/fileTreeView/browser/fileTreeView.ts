@@ -42,8 +42,9 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { ISessionsManagementService, IActiveSessionItem } from '../../sessions/browser/sessionsManagementService.js';
-import { GITHUB_REMOTE_FILE_SCHEME } from './githubFileSystemProvider.js';
+import { ISessionsManagementService } from '../../sessions/browser/sessionsManagementService.js';
+import { ISessionData, GITHUB_REMOTE_FILE_SCHEME } from '../../sessions/common/sessionData.js';
+import { getGitHubRemoteFileDisplayName } from './githubFileSystemProvider.js';
 import { basename } from '../../../../base/common/path.js';
 import { isEqual } from '../../../../base/common/resources.js';
 
@@ -235,24 +236,27 @@ export class FileTreeViewPane extends ViewPane {
 
 	/**
 	 * Determines the root URI for the file tree based on the active session type.
-	 * Tries multiple data sources: IActiveSessionItem fields, agent session model metadata,
+	 * Tries multiple data sources: ISessionData workspace, agent session model metadata,
 	 * and file change URIs as a last resort.
 	 */
-	private resolveTreeRoot(activeSession: IActiveSessionItem | undefined): URI | undefined {
+	private resolveTreeRoot(activeSession: ISessionData | undefined): URI | undefined {
 		if (!activeSession) {
 			return undefined;
 		}
 
 		const sessionType = getChatSessionType(activeSession.resource);
+		const repo = activeSession.workspace.get()?.repositories[0];
+		const worktree = repo?.workingDirectory;
+		const repository = repo?.uri;
 
-		// 1. Try the direct worktree/repository fields from IActiveSessionItem
-		if (activeSession.worktree) {
-			this.logService.info(`[FileTreeView] Using worktree: ${activeSession.worktree.toString()}`);
-			return activeSession.worktree;
+		// 1. Try the direct worktree/repository fields from workspace
+		if (worktree) {
+			this.logService.info(`[FileTreeView] Using worktree: ${worktree.toString()}`);
+			return worktree;
 		}
-		if (activeSession.repository && activeSession.repository.scheme === 'file') {
-			this.logService.info(`[FileTreeView] Using repository: ${activeSession.repository.toString()}`);
-			return activeSession.repository;
+		if (repository && repository.scheme === 'file') {
+			this.logService.info(`[FileTreeView] Using repository: ${repository.toString()}`);
+			return repository;
 		}
 
 		// 2. Query the agent session model directly for metadata
@@ -294,8 +298,8 @@ export class FileTreeViewPane extends ViewPane {
 		}
 
 		// 4. Try to parse the repository URI as a GitHub URL
-		if (activeSession.repository) {
-			const repoStr = activeSession.repository.toString();
+		if (repository) {
+			const repoStr = repository.toString();
 			const parsed = this.parseGitHubUrl(repoStr);
 			if (parsed) {
 				this.logService.info(`[FileTreeView] Parsed repository URI as GitHub: ${parsed.owner}/${parsed.repo}`);
@@ -315,6 +319,9 @@ export class FileTreeViewPane extends ViewPane {
 	 * Extracts a github-remote-file:// URI from session metadata, trying various known fields.
 	 */
 	private extractRepoUriFromMetadata(metadata: { readonly [key: string]: unknown }): URI | undefined {
+		const branch = typeof metadata.branch === 'string' ? metadata.branch : 'HEAD';
+		const encodedRef = encodeURIComponent(branch);
+
 		// repositoryNwo: "owner/repo"
 		const repositoryNwo = metadata.repositoryNwo as string | undefined;
 		if (repositoryNwo && repositoryNwo.includes('/')) {
@@ -322,7 +329,7 @@ export class FileTreeViewPane extends ViewPane {
 			return URI.from({
 				scheme: GITHUB_REMOTE_FILE_SCHEME,
 				authority: 'github',
-				path: `/${repositoryNwo}/HEAD`,
+				path: `/${repositoryNwo}/${encodedRef}`,
 			});
 		}
 
@@ -335,7 +342,7 @@ export class FileTreeViewPane extends ViewPane {
 				return URI.from({
 					scheme: GITHUB_REMOTE_FILE_SCHEME,
 					authority: 'github',
-					path: `/${parsed.owner}/${parsed.repo}/HEAD`,
+					path: `/${parsed.owner}/${parsed.repo}/${encodedRef}`,
 				});
 			}
 		}
@@ -349,7 +356,7 @@ export class FileTreeViewPane extends ViewPane {
 				return URI.from({
 					scheme: GITHUB_REMOTE_FILE_SCHEME,
 					authority: 'github',
-					path: `/${repository}/HEAD`,
+					path: `/${repository}/${encodedRef}`,
 				});
 			}
 			const parsed = this.parseGitHubUrl(repository);
@@ -358,7 +365,7 @@ export class FileTreeViewPane extends ViewPane {
 				return URI.from({
 					scheme: GITHUB_REMOTE_FILE_SCHEME,
 					authority: 'github',
-					path: `/${parsed.owner}/${parsed.repo}/HEAD`,
+					path: `/${parsed.owner}/${parsed.repo}/${encodedRef}`,
 				});
 			}
 		}
@@ -514,7 +521,7 @@ export class FileTreeViewPane extends ViewPane {
 
 			if (this.tree && rootUri && !isEqual(rootUri, lastRootUri)) {
 				lastRootUri = rootUri;
-				this.updateTitle(basename(rootUri.path) || rootUri.toString());
+				this.updateTitle(this.getTreeTitle(rootUri));
 				this.treeInputDisposable.clear();
 				this.tree.setInput(rootUri).then(() => {
 					this.layoutTree();
@@ -523,6 +530,10 @@ export class FileTreeViewPane extends ViewPane {
 				lastRootUri = undefined;
 			}
 		}));
+	}
+
+	private getTreeTitle(rootUri: URI): string {
+		return getGitHubRemoteFileDisplayName(rootUri) ?? (basename(rootUri.path) || rootUri.toString());
 	}
 
 	private layoutTree(): void {

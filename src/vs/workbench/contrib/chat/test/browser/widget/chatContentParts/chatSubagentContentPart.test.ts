@@ -13,7 +13,7 @@ import { mainWindow } from '../../../../../../../base/browser/window.js';
 import { workbenchInstantiationService } from '../../../../../../test/browser/workbenchTestServices.js';
 import { ChatSubagentContentPart } from '../../../../browser/widget/chatContentParts/chatSubagentContentPart.js';
 import { IChatMarkdownContent, IChatSubagentToolInvocationData, IChatToolInvocation, IChatToolInvocationSerialized, ToolConfirmKind } from '../../../../common/chatService/chatService.js';
-import { IChatContentPartRenderContext } from '../../../../browser/widget/chatContentParts/chatContentParts.js';
+import { IChatContentPartRenderContext, InlineTextModelCollection } from '../../../../browser/widget/chatContentParts/chatContentParts.js';
 import { IChatResponseViewModel } from '../../../../common/model/chatViewModel.js';
 import { IChatMarkdownAnchorService } from '../../../../browser/widget/chatContentParts/chatMarkdownAnchorService.js';
 import { IMarkdownRenderer } from '../../../../../../../platform/markdown/browser/markdownRenderer.js';
@@ -55,6 +55,7 @@ suite('ChatSubagentContentPart', () => {
 
 		return {
 			element: mockElement as IChatResponseViewModel,
+			inlineTextModels: {} as InlineTextModelCollection,
 			elementIndex: 0,
 			container: mainWindow.document.createElement('div'),
 			content: [],
@@ -143,13 +144,14 @@ suite('ChatSubagentContentPart', () => {
 				prompt: 'Test prompt'
 			},
 			originMessage: undefined,
-			invocationMessage: options.invocationMessage ?? 'Running subagent...',
+			invocationMessage: options.invocationMessage ?? 'Running subagent',
 			pastTenseMessage: undefined,
 			source: ToolDataSource.Internal,
 			toolId: options.toolId ?? RunSubagentTool.Id,
 			toolCallId: toolCallId,
 			subAgentInvocationId: options.subAgentInvocationId,
 			state: observableValue('state', stateValue),
+			isAttachedToThinking: false,
 			kind: 'toolInvocation',
 			toJSON: () => createMockSerializedToolInvocation({
 				toolId: options.toolId ?? RunSubagentTool.Id,
@@ -178,7 +180,7 @@ suite('ChatSubagentContentPart', () => {
 				result: 'Test result text'
 			},
 			originMessage: undefined,
-			invocationMessage: 'Running subagent...',
+			invocationMessage: 'Running subagent',
 			pastTenseMessage: undefined,
 			resultDetails: undefined,
 			isConfirmed: { type: ToolConfirmKind.ConfirmationNotNeeded },

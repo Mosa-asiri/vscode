@@ -115,9 +115,14 @@ export interface IQuickPickSeparator {
 export interface IKeyMods {
 	readonly ctrlCmd: boolean;
 	readonly alt: boolean;
+	readonly shift: boolean;
 }
 
-export const NO_KEY_MODS: IKeyMods = { ctrlCmd: false, alt: false };
+export function isKeyModified(keyMods: IKeyMods): boolean {
+	return keyMods.ctrlCmd || keyMods.alt || keyMods.shift;
+}
+
+export const NO_KEY_MODS: IKeyMods = { ctrlCmd: false, alt: false, shift: false };
 
 export interface IQuickNavigateConfiguration {
 	keybindings: readonly ResolvedKeybinding[];
@@ -1171,6 +1176,12 @@ export interface IQuickTree<T extends IQuickTreeItem> extends IQuickInput {
 	 * Focuses on the tree input.
 	 */
 	focusOnInput(): void;
+
+	/**
+	 * Reveals and focuses a specific item in the tree.
+	 * @param element The item to reveal and focus.
+	 */
+	reveal(element: T): void;
 
 	/**
 	 * Focus a particular item in the list. Used internally for keyboard navigation.

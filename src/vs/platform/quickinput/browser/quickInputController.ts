@@ -60,7 +60,7 @@ export class QuickInputController extends Disposable {
 	private readonly onDidAcceptEmitter = this._register(new Emitter<void>());
 	private readonly onDidCustomEmitter = this._register(new Emitter<void>());
 	private readonly onDidTriggerButtonEmitter = this._register(new Emitter<IQuickInputButton>());
-	private keyMods: Writeable<IKeyMods> = { ctrlCmd: false, alt: false };
+	private keyMods: Writeable<IKeyMods> = { ctrlCmd: false, alt: false, shift: false };
 
 	private controller: IQuickInput | null = null;
 	get currentQuickInput() { return this.controller ?? undefined; }
@@ -120,6 +120,7 @@ export class QuickInputController extends Disposable {
 		const listener = (e: KeyboardEvent | MouseEvent) => {
 			this.keyMods.ctrlCmd = e.ctrlKey || e.metaKey;
 			this.keyMods.alt = e.altKey;
+			this.keyMods.shift = e.shiftKey;
 		};
 
 		for (const event of [dom.EventType.KEY_DOWN, dom.EventType.KEY_UP, dom.EventType.MOUSE_DOWN]) {
@@ -837,13 +838,14 @@ export class QuickInputController extends Disposable {
 		}
 	}
 
-	async accept(keyMods: IKeyMods = { alt: false, ctrlCmd: false }) {
+	async accept(keyMods: IKeyMods = { alt: false, ctrlCmd: false, shift: false }) {
 		// When accepting the item programmatically, it is important that
 		// we update `keyMods` either from the provided set or unset it
 		// because the accept did not happen from mouse or keyboard
 		// interaction on the list itself
 		this.keyMods.alt = keyMods.alt;
 		this.keyMods.ctrlCmd = keyMods.ctrlCmd;
+		this.keyMods.shift = keyMods.shift;
 
 		this.onDidAcceptEmitter.fire();
 	}
@@ -922,13 +924,12 @@ export class QuickInputController extends Disposable {
 	private updateStyles() {
 		if (this.ui) {
 			const {
-				quickInputTitleBackground, quickInputBackground, quickInputForeground, widgetBorder, widgetShadow,
+				quickInputTitleBackground, quickInputBackground, quickInputForeground, widgetBorder,
 			} = this.styles.widget;
 			this.ui.titleBar.style.backgroundColor = quickInputTitleBackground ?? '';
 			this.ui.container.style.backgroundColor = quickInputBackground ?? '';
 			this.ui.container.style.color = quickInputForeground ?? '';
 			this.ui.container.style.border = widgetBorder ? `1px solid ${widgetBorder}` : '';
-			this.ui.container.style.boxShadow = widgetShadow ? `0 0 8px 2px ${widgetShadow}` : '';
 			this.ui.list.style(this.styles.list);
 			this.ui.tree.tree.style(this.styles.list);
 
